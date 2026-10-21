@@ -5,7 +5,9 @@
 //  Created by Prisha Marpu on 4/9/26.
 //
 
+import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
 
@@ -74,10 +76,7 @@ struct ContentView: View {
             }
 
             // ── Log panel ──────────────────────────────────────────
-            LogPanel(
-                entries: appModel.mathManager.log,
-                trials:  appModel.mathManager.trial.events
-            )
+            LogPanel(entries: appModel.mathManager.log)
 
             Spacer(minLength: 0)
         }
@@ -157,78 +156,91 @@ struct AnswerTile: View {
 // MARK: - Log panel
 struct LogPanel: View {
     let entries: [LogEntry]
-    let trials:  [TrialEvent]
-    @State private var exportMessage = ""
+    @State private var exportText = ""
+    @State private var isExporting = false
+    @State private var exportStatus: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-
-            HStack {
-                Text("Event Log (\(entries.count) entries)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Session log")
+                    .font(.headline)
                 Spacer()
-                Button("Export CSV") {
-                    if let url = LogExporter.saveCombined(entries: entries, trials: trials) {
-                        exportMessage = "✅ \(url.lastPathComponent)"
-                    } else {
-                        exportMessage = "❌ Export failed"
-                    }
-                }
+                Text("\(entries.count)")
+                    .font(.subheadline.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Written each time a question appears or an answer is chosen.")
                 .font(.caption)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Color.green.opacity(0.15), in: Capsule())
+                .foregroundStyle(.secondary)
+
+            Button(action: beginExport) {
+                Label("Download log", systemImage: "arrow.down.doc")
+            }
+            .disabled(entries.isEmpty)
+
+            if let exportStatus {
+                Text(exportStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            if !exportMessage.isEmpty {
-                Text(exportMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.green)
-            }
+            Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(entries.suffix(12).reversed()) { entry in
-                        HStack(alignment: .top, spacing: 6) {
-                            Circle()
-                                .fill(dotColor(for: entry.eventType))
-                                .frame(width: 6, height: 6)
-                                .padding(.top, 3)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(entries) { entry in
                             Text(entry.formatted)
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(logColor(for: entry.message))
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                                .id(entry.id)
                         }
                     }
                 }
+                .onChange(of: entries.count) { _, _ in
+                    guard let id = entries.last?.id else { return }
+                    withAnimation(.snappy) {
+                        proxy.scrollTo(id, anchor: .bottom)
+                    }
+                }
             }
-            .frame(maxHeight: 160)
+            .frame(maxHeight: 220)
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .fileExporter(
+            isPresented: $isExporting,
+            document: LogFile(text: exportText),
+            contentType: .plainText,
+            defaultFilename: "math-question-log"
+        ) { result in
+            switch result {
+            case .success:
+                exportStatus = "Log saved."
+            case .failure(let error):
+                let nsError = error as NSError
+                let cancelled = nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.userCancelled.rawValue
+                if !cancelled {
+                    exportStatus = error.localizedDescription
+                }
+            }
+        }
     }
 
-    private func dotColor(for eventType: String) -> Color {
-        switch eventType {
-        case "answer_selected":  return .blue
-        case "new_question":     return .orange
-        case "gaze_on_answer":   return .cyan
-        case "gaze_coordinates": return .purple
-        case "gaze_idle":        return .gray
-        case "level_change":     return .pink
-        case "session_start":    return .gray
-        default:                 return .secondary
-        }
+    private func beginExport() {
+        guard !entries.isEmpty else { return }
+        exportText = QuestionLogFormat.text(entries: entries)
+        isExporting = true
     }
 
     private func logColor(for message: String) -> Color {
-        if message.contains("✓")          { return .green              }
-        if message.contains("✗")          { return .red                }
-        if message.contains("GAZE ON")    { return .cyan               }
-        if message.contains("GAZE COORD") { return .blue.opacity(0.7)  }
-        if message.contains("GAZE IDLE")  { return .gray               }
-        if message.contains("NEW QUEST")  { return .orange             }
-        if message.contains("LEVEL")      { return .pink               }
+        if message.contains("NEW QUESTION") { return .orange }
+        if message.contains("✓") { return .green }
+        if message.contains("✗") { return .red }
         return .secondary
     }
 }

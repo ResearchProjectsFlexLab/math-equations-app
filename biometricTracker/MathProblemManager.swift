@@ -8,6 +8,7 @@
 
 import Foundation
 import Observation
+import os
 import simd
 import QuartzCore
 
@@ -17,7 +18,7 @@ struct LogEntry: Identifiable, Codable {
     let timestamp = Date()
     let message:  String
 
-    var eventType: String { LogExporter.parseEventType(from: message) }
+    var eventType: String { QuestionLogFormat.parseEventType(from: message) }
 
     var formatted: String {
         let f = DateFormatter()
@@ -73,6 +74,8 @@ final class MathProblemManager {
     var log:               [LogEntry]  = []
 
     let trial = TrialSession()
+
+    private let questionLogger = Logger(subsystem: "FlexLab.biometricTracker", category: "QuestionLog")
 
     private var questionSpawnTime: TimeInterval = 0
     private var questionIndex:     Int          = 0
@@ -166,10 +169,15 @@ final class MathProblemManager {
         addLog("NEW QUESTION [\(questionIndex)] — \(problem.question) | Level: \(currentLevel.title) | Options: \(problem.answers.joined(separator: ", "))")
     }
 
+    var logText: String {
+        QuestionLogFormat.text(entries: log)
+    }
+
     func addLog(_ message: String) {
         let entry = LogEntry(message: message)
         log.append(entry)
-        print(entry.formatted)
+        let line = entry.formatted
+        questionLogger.info("\(line, privacy: .public)")
     }
 
     private func pointValue() -> Int {
