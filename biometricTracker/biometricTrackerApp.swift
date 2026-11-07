@@ -18,6 +18,7 @@ struct biometricTrackerApp: App {
             ContentView()
                 .environment(appModel)
         }
+        .defaultSize(width: 980, height: 820)
 
         ImmersiveSpace(id: appModel.immersiveSpaceID) {
             ImmersiveView()

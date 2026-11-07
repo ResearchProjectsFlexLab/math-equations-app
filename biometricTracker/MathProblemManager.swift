@@ -57,21 +57,46 @@ struct MathProblem: Identifiable {
     var correctAnswer: String { answers[correctIndex] }
 }
 
+// MARK: - Test Phase
+enum TestPhase: Equatable {
+    case ready       // before Start is pressed
+    case countdown   // Start pressed, logging on, 3-2-1 before first question
+    case running     // questions on screen
+    case finished    // Stop pressed, logging closed, log ready to download
+}
+
 // MARK: - Manager
 @MainActor
 @Observable
 final class MathProblemManager {
+
+    /// Seconds a participant has to answer each question before it counts as missed.
+    static let secondsPerQuestion: Double = 20
 
     var current:           MathProblem = MathProblem.generate(level: .easy)
     var currentLevel:      GameLevel   = .easy
     var score:             Int         = 0
     var correctCount:      Int         = 0
     var wrongCount:        Int         = 0
+    var timedOutCount:     Int         = 0
     var totalAnswered:     Int         = 0
     var streak:            Int         = 0
     var lastCorrect:       Bool?       = nil
     var lastAnsweredIndex: Int?        = nil
+    var phase:             TestPhase   = .ready
+    var countdownValue:    Int         = 0
+    var timeRemaining:     Double      = MathProblemManager.secondsPerQuestion
+    var questionNumber:    Int         { questionIndex }
+    var sessionStartDate:  Date?       = nil
+    var sessionEndDate:    Date?       = nil
+    var participantID:     String      = ""
+    /// Where the log was written when the test stopped (Files › On My Apple Vision Pro › biometricTracker).
+    var savedLogURL:       URL?        = nil
+    var saveError:         String?     = nil
     var log:               [LogEntry]  = []
+
+    /// True from the moment Start is pressed until Stop is pressed — i.e. while logging is on.
+    var isRunning: Bool { phase == .countdown || phase == .running }
 
     let trial = TrialSession()
 
@@ -79,15 +104,134 @@ final class MathProblemManager {
 
     private var questionSpawnTime: TimeInterval = 0
     private var questionIndex:     Int          = 0
+    private var reactionTimesMs:   [Double]     = []
+    private var advanceTask:       Task<Void, Never>?
+    private var countdownTask:     Task<Void, Never>?
+    private var timerTask:         Task<Void, Never>?
 
-    init() {
-        addLog("SESSION START — \(formattedDate())")
-        spawnNewQuestion(current)
+    // MARK: - Start / Stop
+
+    /// Starts logging immediately, then shows a countdown before the first question.
+    /// Pass `countdown: 0` to show the first question right away.
+    func start(countdown: Int = 3) {
+        guard !isRunning else { return }
+        cancelTasks()
+        score = 0
+        correctCount = 0
+        wrongCount = 0
+        timedOutCount = 0
+        totalAnswered = 0
+        streak = 0
+        lastCorrect = nil
+        lastAnsweredIndex = nil
+        currentLevel = .easy
+        questionIndex = 0
+        reactionTimesMs = []
+        trial.events = []
+        trial.lastReactionMs = nil
+        log = []
+        sessionStartDate = .now
+        sessionEndDate = nil
+        savedLogURL = nil
+        saveError = nil
+
+        let who = participantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        addLog("SESSION START — \(formattedDate())" + (who.isEmpty ? "" : " | participant: \(who)"))
+
+        guard countdown > 0 else {
+            beginQuestions()
+            return
+        }
+
+        phase = .countdown
+        countdownValue = countdown
+        countdownTask = Task {
+            for value in stride(from: countdown, through: 1, by: -1) {
+                countdownValue = value
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+            }
+            beginQuestions()
+        }
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        cancelTasks()
+        phase = .finished
+        lastCorrect = nil
+        lastAnsweredIndex = nil
+        sessionEndDate = .now
+        addLog(String(
+            format: "SESSION STOP — score: \(score) correct: \(correctCount) wrong: \(wrongCount) timed out: \(timedOutCount) | accuracy: %.0f%% | avg reaction: %.0fms | duration: %.0fs",
+            accuracy * 100, averageReactionMs ?? 0, sessionDuration
+        ))
+        saveLogToFiles()
+    }
+
+    /// Writes the log into the app's Documents folder, which the Files app shows,
+    /// so nothing is asked of the participant after Stop.
+    func saveLogToFiles(directory: URL? = nil) {
+        do {
+            let folder = try directory ?? FileManager.default.url(
+                for: .documentDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true
+            )
+            var url = folder.appendingPathComponent(suggestedLogFilename).appendingPathExtension("txt")
+            var n = 2
+            while FileManager.default.fileExists(atPath: url.path) {
+                url = folder.appendingPathComponent("\(suggestedLogFilename)-\(n)").appendingPathExtension("txt")
+                n += 1
+            }
+            try logText.write(to: url, atomically: true, encoding: .utf8)
+            savedLogURL = url
+            saveError = nil
+        } catch {
+            savedLogURL = nil
+            saveError = error.localizedDescription
+        }
+    }
+
+    /// Returns to the welcome screen after a finished test.
+    func reset() {
+        guard !isRunning else { return }
+        phase = .ready
+    }
+
+    // MARK: - Summary stats
+
+    var accuracy: Double {
+        totalAnswered == 0 ? 0 : Double(correctCount) / Double(totalAnswered)
+    }
+
+    var averageReactionMs: Double? {
+        reactionTimesMs.isEmpty ? nil : reactionTimesMs.reduce(0, +) / Double(reactionTimesMs.count)
+    }
+
+    var sessionDuration: TimeInterval {
+        guard let sessionStartDate else { return 0 }
+        return (sessionEndDate ?? .now).timeIntervalSince(sessionStartDate)
+    }
+
+    var logText: String {
+        QuestionLogFormat.text(entries: log)
+    }
+
+    var suggestedLogFilename: String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let stamp = f.string(from: sessionStartDate ?? .now)
+        let who = participantID
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "[^A-Za-z0-9_-]+", with: "-", options: .regularExpression)
+        return who.isEmpty ? "math-test-log_\(stamp)" : "math-test-log_\(who)_\(stamp)"
     }
 
     // MARK: - Submit
     func submit(answerIndex: Int) {
-        guard lastCorrect == nil else { return }
+        guard phase == .running, lastCorrect == nil,
+              current.answers.indices.contains(answerIndex) else { return }
+        timerTask?.cancel()
 
         let isCorrect     = answerIndex == current.correctIndex
         lastCorrect       = isCorrect
@@ -97,6 +241,7 @@ final class MathProblemManager {
         let tapped       = current.answers[answerIndex]
         let responseTime = CACurrentMediaTime()
         let reactionMs   = (responseTime - questionSpawnTime) * 1000.0
+        reactionTimesMs.append(reactionMs)
 
         let event = TrialEvent(
             trialIndex:        questionIndex,
@@ -125,16 +270,37 @@ final class MathProblemManager {
             ))
         }
 
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            lastCorrect       = nil
-            lastAnsweredIndex = nil
-            advance()
-        }
+        scheduleAdvance()
+    }
+
+    /// Called when the per-question timer runs out.
+    func timeOut() {
+        guard phase == .running, lastCorrect == nil else { return }
+        timerTask?.cancel()
+        lastCorrect       = false
+        lastAnsweredIndex = nil
+        totalAnswered    += 1
+        wrongCount       += 1
+        timedOutCount    += 1
+        streak            = 0
+        timeRemaining     = 0
+
+        trial.events.append(TrialEvent(
+            trialIndex:        questionIndex,
+            spawnTimestamp:    questionSpawnTime,
+            responseTimestamp: CACurrentMediaTime(),
+            dotPosition:       SIMD3<Float>(0, 0, -0.65),
+            responded:         false
+        ))
+        addLog("TIME UP ✗ no answer | correct: '\(current.correctAnswer)' | Q: \(current.question) | limit: \(Int(Self.secondsPerQuestion))s")
+        scheduleAdvance()
     }
 
     // MARK: - Advance
     func advance() {
+        guard phase == .running else { return }
+        lastCorrect       = nil
+        lastAnsweredIndex = nil
         let oldLevel = currentLevel
         if correctCount >= 10     { currentLevel = .hard   }
         else if correctCount >= 5 { currentLevel = .medium }
@@ -163,14 +329,49 @@ final class MathProblemManager {
     }
 
     // MARK: - Helpers
+    private func beginQuestions() {
+        phase = .running
+        current = MathProblem.generate(level: currentLevel)
+        spawnNewQuestion(current)
+    }
+
+    private func scheduleAdvance() {
+        advanceTask = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            advance()
+        }
+    }
+
     private func spawnNewQuestion(_ problem: MathProblem) {
         questionSpawnTime = CACurrentMediaTime()
         questionIndex    += 1
         addLog("NEW QUESTION [\(questionIndex)] — \(problem.question) | Level: \(currentLevel.title) | Options: \(problem.answers.joined(separator: ", "))")
+        startQuestionTimer()
     }
 
-    var logText: String {
-        QuestionLogFormat.text(entries: log)
+    private func startQuestionTimer() {
+        timerTask?.cancel()
+        timeRemaining = Self.secondsPerQuestion
+        let spawn = questionSpawnTime
+        timerTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                if Task.isCancelled { return }
+                let left = Self.secondsPerQuestion - (CACurrentMediaTime() - spawn)
+                timeRemaining = max(0, left)
+                if left <= 0 {
+                    timeOut()
+                    return
+                }
+            }
+        }
+    }
+
+    private func cancelTasks() {
+        advanceTask?.cancel();   advanceTask = nil
+        countdownTask?.cancel(); countdownTask = nil
+        timerTask?.cancel();     timerTask = nil
     }
 
     func addLog(_ message: String) {

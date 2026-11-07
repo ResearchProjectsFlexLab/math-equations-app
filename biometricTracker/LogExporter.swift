@@ -34,6 +34,8 @@ enum QuestionLogFormat {
         if message.hasPrefix("GAZE IDLE") { return "gaze_idle" }
         if message.hasPrefix("LEVEL CHANGE") { return "level_change" }
         if message.hasPrefix("SESSION START") { return "session_start" }
+        if message.hasPrefix("SESSION STOP") { return "session_stop" }
+        if message.hasPrefix("TIME UP") { return "time_up" }
         return "other"
     }
 }
