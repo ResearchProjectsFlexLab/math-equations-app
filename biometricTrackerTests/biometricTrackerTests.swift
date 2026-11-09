@@ -67,26 +67,27 @@ struct biometricTrackerTests {
         if let url = game.savedLogURL { try? FileManager.default.removeItem(at: url) }
     }
 
-    @Test @MainActor func testEndsAndSavesAfterMaxQuestions() throws {
+    @Test @MainActor func testEndsAndSavesWhenTimeIsUp() throws {
+        #expect(MathProblemManager.testDuration == 180)
         let game = MathProblemManager()
         game.start(countdown: 0)
-        for _ in 1..<MathProblemManager.maxQuestions {
-            game.timeOut()
-            game.advance()
-            #expect(game.isRunning)
-        }
-        #expect(game.questionNumber == MathProblemManager.maxQuestions)
+        #expect(game.testTimeRemaining == MathProblemManager.testDuration)
 
-        game.timeOut()
-        game.advance()   // no 26th question: the test ends itself
+        game.endBecauseTimeIsUp()
         #expect(game.phase == .finished)
         #expect(game.completedAllQuestions)
-        #expect(game.log.filter { $0.message.hasPrefix("NEW QUESTION") }.count == MathProblemManager.maxQuestions)
+        #expect(game.testTimeRemaining == 0)
         #expect(game.log.contains { $0.message.hasPrefix("SESSION COMPLETE") })
 
+        // Saved automatically, nothing to press.
         let url = try #require(game.savedLogURL)
         #expect(try String(contentsOf: url, encoding: .utf8).contains("SESSION STOP"))
         try? FileManager.default.removeItem(at: url)
+
+        // No more questions after time is up.
+        let questions = game.log.filter { $0.message.hasPrefix("NEW QUESTION") }.count
+        game.advance()
+        #expect(game.log.filter { $0.message.hasPrefix("NEW QUESTION") }.count == questions)
     }
 
 }

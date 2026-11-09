@@ -73,10 +73,13 @@ final class MathProblemManager {
     /// Seconds a participant has to answer each question before it counts as missed.
     static let secondsPerQuestion: Double = 20
 
-    /// The test ends on its own (and saves the log) after this many questions.
-    static let maxQuestions: Int = 25
+    /// The test ends on its own (and saves the log) after this long. Counted from the first question.
+    static let testDuration: TimeInterval = 3 * 60
 
-    /// True when the test ended because all questions were done, not because Stop was pressed.
+    /// Time left in the whole test.
+    var testTimeRemaining: TimeInterval = MathProblemManager.testDuration
+
+    /// True when the test ended because time ran out, not because Stop was pressed.
     var completedAllQuestions: Bool = false
 
     var current:           MathProblem = MathProblem.generate(level: .easy)
@@ -114,6 +117,7 @@ final class MathProblemManager {
     private var advanceTask:       Task<Void, Never>?
     private var countdownTask:     Task<Void, Never>?
     private var timerTask:         Task<Void, Never>?
+    private var testClockTask:     Task<Void, Never>?
 
     // MARK: - Start / Stop
 
@@ -141,6 +145,7 @@ final class MathProblemManager {
         savedLogURL = nil
         saveError = nil
         completedAllQuestions = false
+        testTimeRemaining = Self.testDuration
 
         let who = participantID.trimmingCharacters(in: .whitespacesAndNewlines)
         addLog("SESSION START — \(formattedDate())" + (who.isEmpty ? "" : " | participant: \(who)"))
@@ -306,12 +311,6 @@ final class MathProblemManager {
     // MARK: - Advance
     func advance() {
         guard phase == .running else { return }
-        if questionIndex >= Self.maxQuestions {
-            completedAllQuestions = true
-            addLog("SESSION COMPLETE — all \(Self.maxQuestions) questions done")
-            stop()
-            return
-        }
         lastCorrect       = nil
         lastAnsweredIndex = nil
         let oldLevel = currentLevel
@@ -342,8 +341,18 @@ final class MathProblemManager {
     }
 
     // MARK: - Helpers
+    /// Ends the test because the time limit was reached. The log is saved automatically.
+    func endBecauseTimeIsUp() {
+        guard phase == .running else { return }
+        completedAllQuestions = true
+        testTimeRemaining = 0
+        addLog("SESSION COMPLETE — \(Int(Self.testDuration / 60)) minute time limit reached")
+        stop()
+    }
+
     private func beginQuestions() {
         phase = .running
+        startTestClock()
         current = MathProblem.generate(level: currentLevel)
         spawnNewQuestion(current)
     }
@@ -381,10 +390,29 @@ final class MathProblemManager {
         }
     }
 
+    private func startTestClock() {
+        testClockTask?.cancel()
+        testTimeRemaining = Self.testDuration
+        let began = CACurrentMediaTime()
+        testClockTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Task.isCancelled { return }
+                let left = Self.testDuration - (CACurrentMediaTime() - began)
+                testTimeRemaining = max(0, left)
+                if left <= 0 {
+                    endBecauseTimeIsUp()
+                    return
+                }
+            }
+        }
+    }
+
     private func cancelTasks() {
         advanceTask?.cancel();   advanceTask = nil
         countdownTask?.cancel(); countdownTask = nil
         timerTask?.cancel();     timerTask = nil
+        testClockTask?.cancel(); testClockTask = nil
     }
 
     func addLog(_ message: String) {

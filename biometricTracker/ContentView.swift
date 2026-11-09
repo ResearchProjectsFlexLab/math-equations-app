@@ -141,7 +141,7 @@ private struct TestView: View {
             // Header: recording + question number + level
             HStack(spacing: 14) {
                 RecordingBadge()
-                Text("Question \(game.questionNumber) of \(MathProblemManager.maxQuestions)")
+                Text("Question \(game.questionNumber)")
                     .font(.title2.weight(.semibold))
                     .monospacedDigit()
                 Text(game.currentLevel.title)
@@ -150,6 +150,7 @@ private struct TestView: View {
                     .background(levelColor.opacity(0.18), in: Capsule())
                     .foregroundStyle(levelColor)
                 Spacer()
+                TestClock(remaining: game.testTimeRemaining)
             }
             .padding(.trailing, 140) // leave room for the Stop control
 
@@ -212,6 +213,21 @@ private struct TestView: View {
         if index == game.current.correctIndex                  { return .correct }
         if index == game.lastAnsweredIndex && !result           { return .wrong }
         return .dimmed
+    }
+}
+
+/// Time left in the whole test, e.g. "2:41 left". Turns orange in the last 30 seconds.
+private struct TestClock: View {
+    let remaining: TimeInterval
+
+    var body: some View {
+        let secs = Int(remaining.rounded(.up))
+        Label(String(format: "%d:%02d left", secs / 60, secs % 60), systemImage: "clock")
+            .font(.title3.weight(.semibold).monospacedDigit())
+            .foregroundStyle(secs <= 30 ? .orange : .primary)
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .accessibilityLabel("\(secs / 60) minutes \(secs % 60) seconds left in the test")
     }
 }
 
@@ -289,7 +305,7 @@ private struct ResultsView: View {
                 Text("Test Complete")
                     .font(.extraLargeTitle2)
                 if game.completedAllQuestions {
-                    Text("You answered all \(MathProblemManager.maxQuestions) questions.")
+                    Text("Time's up — the \(Int(MathProblemManager.testDuration / 60))-minute test is over.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
