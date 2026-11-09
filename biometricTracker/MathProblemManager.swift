@@ -73,6 +73,12 @@ final class MathProblemManager {
     /// Seconds a participant has to answer each question before it counts as missed.
     static let secondsPerQuestion: Double = 20
 
+    /// The test ends on its own (and saves the log) after this many questions.
+    static let maxQuestions: Int = 25
+
+    /// True when the test ended because all questions were done, not because Stop was pressed.
+    var completedAllQuestions: Bool = false
+
     var current:           MathProblem = MathProblem.generate(level: .easy)
     var currentLevel:      GameLevel   = .easy
     var score:             Int         = 0
@@ -134,6 +140,7 @@ final class MathProblemManager {
         sessionEndDate = nil
         savedLogURL = nil
         saveError = nil
+        completedAllQuestions = false
 
         let who = participantID.trimmingCharacters(in: .whitespacesAndNewlines)
         addLog("SESSION START — \(formattedDate())" + (who.isEmpty ? "" : " | participant: \(who)"))
@@ -299,6 +306,12 @@ final class MathProblemManager {
     // MARK: - Advance
     func advance() {
         guard phase == .running else { return }
+        if questionIndex >= Self.maxQuestions {
+            completedAllQuestions = true
+            addLog("SESSION COMPLETE — all \(Self.maxQuestions) questions done")
+            stop()
+            return
+        }
         lastCorrect       = nil
         lastAnsweredIndex = nil
         let oldLevel = currentLevel

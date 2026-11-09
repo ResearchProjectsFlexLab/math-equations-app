@@ -35,6 +35,7 @@ enum QuestionLogFormat {
         if message.hasPrefix("LEVEL CHANGE") { return "level_change" }
         if message.hasPrefix("SESSION START") { return "session_start" }
         if message.hasPrefix("SESSION STOP") { return "session_stop" }
+        if message.hasPrefix("SESSION COMPLETE") { return "session_complete" }
         if message.hasPrefix("TIME UP") { return "time_up" }
         return "other"
     }

@@ -35,6 +35,10 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.35), value: game.phase)
+        // However the test ends (Stop or all questions done), leave the test room.
+        .onChange(of: game.phase) { _, phase in
+            if phase == .finished { Task { await leaveTestRoom() } }
+        }
         .padding(32)
         .frame(minWidth: 820, minHeight: 720)
         // Stop is always reachable while logging is on. One press ends the test and saves the log.
@@ -55,7 +59,6 @@ struct ContentView: View {
 
     private func stopTest() {
         game.stop()   // stops logging and saves the log file automatically
-        Task { await leaveTestRoom() }
     }
 
     private func enterTestRoom() async {
@@ -138,7 +141,7 @@ private struct TestView: View {
             // Header: recording + question number + level
             HStack(spacing: 14) {
                 RecordingBadge()
-                Text("Question \(game.questionNumber)")
+                Text("Question \(game.questionNumber) of \(MathProblemManager.maxQuestions)")
                     .font(.title2.weight(.semibold))
                     .monospacedDigit()
                 Text(game.currentLevel.title)
@@ -282,8 +285,15 @@ private struct ResultsView: View {
 
     var body: some View {
         VStack(spacing: 30) {
-            Text("Test Complete")
-                .font(.extraLargeTitle2)
+            VStack(spacing: 8) {
+                Text("Test Complete")
+                    .font(.extraLargeTitle2)
+                if game.completedAllQuestions {
+                    Text("You answered all \(MathProblemManager.maxQuestions) questions.")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             HStack(spacing: 0) {
                 ScoreTile(label: "Correct",  value: "\(game.correctCount)/\(game.totalAnswered)", color: .green)
