@@ -125,4 +125,24 @@ struct biometricTrackerTests {
         game.stop()
         if let url = game.savedLogURL { try? FileManager.default.removeItem(at: url) }
     }
+
+    @Test @MainActor func beginShowsInstructionsAndStopThereRecordsNothing() {
+        let game = MathProblemManager()
+        game.begin()
+        #expect(game.phase == .instructions)
+        #expect(game.isRunning)
+        #expect(game.log.contains { $0.message.hasPrefix("INSTRUCTIONS SHOWN") })
+
+        game.stop()
+        #expect(game.phase == .ready)
+        #expect(game.savedLogURL == nil)
+
+        game.begin()
+        game.startBaseline()
+        #expect(game.phase == .relaxBefore)
+        #expect(game.breath() >= 0 && game.breath() <= 1)
+        #expect(MathProblemManager.breathCycle == 5)
+        game.stop()
+        if let url = game.savedLogURL { try? FileManager.default.removeItem(at: url) }
+    }
 }

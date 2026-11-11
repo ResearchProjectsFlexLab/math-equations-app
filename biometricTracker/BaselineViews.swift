@@ -2,218 +2,177 @@
 //  BaselineViews.swift
 //  biometricTracker
 //
-//  Screens for the baseline before the math test: instructions, and the calm,
-//  guided 1-minute rest used before and after the test.
+//  The start window, and the panels shown inside the mountain scene: the baseline
+//  instructions, the faint text during the rests, the test instructions and the test.
 //
 
 import SwiftUI
 
-// MARK: - Welcome (baseline instructions)
+// MARK: - Start window
 
 struct WelcomeView: View {
+    let isOpening: Bool
     let onStart: () -> Void
+    let inWindow: () -> Void
 
     var body: some View {
-        VStack(spacing: 36) {
-            VStack(spacing: 12) {
-                Text("Welcome")
-                    .font(.extraLargeTitle)
-                Text("First, a quiet minute to settle in.")
+        VStack(spacing: 24) {
+            Image(systemName: "mountain.2.fill")
+                .font(.system(size: 60, weight: .semibold))
+                .foregroundStyle(.teal)
+                .symbolEffect(.pulse, isActive: isOpening)
+
+            VStack(spacing: 8) {
+                Text("Math Test")
+                    .font(.extraLargeTitle2)
+                Text("1 min rest  ·  \(Int(MathProblemManager.testDuration / 60)) min test  ·  1 min rest")
                     .font(.title3)
                     .foregroundStyle(.secondary)
+                Text("Relax in a quiet snowy valley, answer math questions, then relax again. The log saves itself.")
+                    .foregroundStyle(.secondary)
             }
+            .multilineTextAlignment(.center)
 
-            VStack(alignment: .leading, spacing: 18) {
-                StepRow(number: 1, text: "Relax among quiet, snowy mountains for 1 minute, breathing slowly.")
-                StepRow(number: 2, text: "Math test: 3 minutes. Look at an answer and pinch your fingers to choose it.")
-                StepRow(number: 3, text: "Relax again for 1 minute.")
+            if isOpening {
+                VStack(spacing: 14) {
+                    ProgressView("Getting ready…")
+                    Button("Run in this window instead", action: inWindow)
+                        .buttonStyle(.borderless)
+                        .font(.footnote)
+                }
+            } else {
+                Button(action: onStart) {
+                    Label("Start", systemImage: "play.fill")
+                        .font(.title2.weight(.semibold))
+                        .padding(.horizontal, 36)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.teal)
+                .buttonBorderShape(.capsule)
             }
-            .padding(28)
-            .frame(maxWidth: 640)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-
-            Button(action: onStart) {
-                Label("Start Baseline", systemImage: "play.fill")
-                    .font(.title.weight(.semibold))
-                    .frame(minWidth: 320, minHeight: 80)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
-            .controlSize(.extraLarge)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-private struct StepRow: View {
-    let number: Int
-    let text: String
+// MARK: - Session panel
+
+/// What floats in front of the participant for each step. Shows nothing during the rests
+/// (the scene and the faint RestHUD do the work there).
+struct SessionPanel: View {
+    @Environment(AppModel.self) private var appModel
+    /// True when running in the control window because the immersive scene couldn't open.
+    var inWindow = false
+
+    private var game: MathProblemManager { appModel.mathManager }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 16) {
-            Text("\(number)")
-                .font(.title3.bold())
-                .frame(width: 40, height: 40)
-                .background(.blue.opacity(0.25), in: Circle())
-            Text(text)
-                .font(.title3)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-// MARK: - Rest (1 minute, before and after the test)
-
-/// A calm, guided minute: a softly glowing orb to breathe with (in for 4 s, out for 6 s —
-/// a longer out-breath helps the body settle), and gentle prompts that change slowly.
-/// No big clock and no red badge, so nothing pulls attention or adds pressure.
-struct RestView: View {
-    let isAfterTest: Bool
-    let remaining: TimeInterval
-
-    private static let inhale: Double = 4
-    private static let exhale: Double = 6
-    private static let promptSeconds: Double = 12
-
-    private static let promptsBefore = [
-        "Look out at the quiet, snowy peaks.",
-        "Breathe in the cool, clean mountain air.",
-        "Let your shoulders soften and drop.",
-        "Watch the snow drift slowly down.",
-        "There is nothing you need to do right now.",
-    ]
-    private static let promptsAfter = [
-        "You did well. Let the test go.",
-        "Look out at the still, snowy mountains.",
-        "Breathe in the cool, clean mountain air.",
-        "Relax your hands and your face.",
-        "Watch the snow drift slowly down.",
-    ]
-
-    @State private var breathingIn = false
-    @State private var promptIndex = 0
-
-    private var prompts: [String] { isAfterTest ? Self.promptsAfter : Self.promptsBefore }
-    private var progress: Double {
-        1 - max(0, min(1, remaining / MathProblemManager.restDuration))
-    }
-
-    var body: some View {
-        VStack(spacing: 28) {
-            HStack {
-                QuietLoggingDot()
-                Spacer()
+        Group {
+            switch game.phase {
+            case .instructions:
+                InstructionsCard(inWindow: inWindow)
+            case .relaxBefore, .relaxAfter:
+                if inWindow { RestHUD() } else { Color.clear.frame(width: 1, height: 1) }
+            case .testIntro:
+                card { TestIntroView(onStart: { game.start() }) }
+            case .countdown:
+                card { CountdownView(value: game.countdownValue) }
+            case .running:
+                card { TestView() }
+            default:
+                Color.clear.frame(width: 1, height: 1)
             }
-            .padding(.trailing, 140)
+        }
+        .animation(.easeInOut(duration: 0.35), value: game.phase)
+    }
 
-            Text(isAfterTest ? "Well done. Now, rest." : "Take a quiet moment in the mountains")
-                .font(.largeTitle.weight(.medium))
-                .foregroundStyle(.primary.opacity(0.9))
+    /// The test screens sit on a glass panel in the scene; in the window they fill it.
+    @ViewBuilder private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if inWindow {
+            content()
+                .overlay(alignment: .topTrailing) { StopControl(onStop: { game.stop() }) }
+        } else {
+            content()
+                .padding(32)
+                .frame(width: 980, height: 800)
+                .overlay(alignment: .topTrailing) { StopControl(onStop: { game.stop() }).padding(28) }
+                .glassBackgroundEffect()
+        }
+    }
+}
 
-            BreathingOrb(expanded: breathingIn)
-                .frame(width: 380, height: 380)
+// MARK: - Baseline instructions
 
-            Text(breathingIn ? "Breathe in…" : "…and slowly out")
-                .font(.title2.weight(.regular))
-                .foregroundStyle(.secondary)
-                .contentTransition(.opacity)
-                .animation(.easeInOut(duration: 1.2), value: breathingIn)
+/// Shown in the mountain scene before the baseline: what to do, and a button to begin.
+struct InstructionsCard: View {
+    @Environment(AppModel.self) private var appModel
+    var inWindow = false
 
-            Text(prompts[promptIndex % prompts.count])
-                .font(.title3.italic())
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .id(promptIndex)
-                .transition(.opacity)
-                .frame(height: 30)
-
-            Spacer(minLength: 0)
-
-            // A faint line that fills over the minute — no numbers to watch.
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.08))
-                    Capsule().fill(.white.opacity(0.28))
-                        .frame(width: geo.size.width * progress)
-                        .animation(.linear(duration: 0.25), value: progress)
-                }
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("Before we begin")
+                .font(.largeTitle.weight(.semibold))
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Sit comfortably with your back supported.", systemImage: "chair")
+                Label("Rest your hands on your lap and keep still.", systemImage: "hand.raised")
+                Label("Look at the tallest snowy peak straight ahead.", systemImage: "mountain.2")
+                Label("Breathe gently as the light behind the mountains glows and fades.", systemImage: "wind")
             }
-            .frame(width: 300, height: 4)
-            .accessibilityLabel("\(Int(remaining.rounded(.up))) seconds of rest left")
+            .font(.title3)
+            Text("This lasts 1 minute. The math test instructions follow.")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+            Text("To stop at any time, press the Digital Crown.")
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+            Button {
+                appModel.mathManager.startBaseline()
+            } label: {
+                Label("Start baseline", systemImage: "play.fill")
+                    .font(.title2.weight(.semibold))
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.teal)
+            .buttonBorderShape(.capsule)
         }
-        .background {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.20, green: 0.30, blue: 0.50).opacity(0.30),
-                                              Color(red: 0.35, green: 0.50, blue: 0.70).opacity(0.20)],
-                                     startPoint: .top, endPoint: .bottom))
-                .padding(-20)
-        }
-        .task { await breathe() }
-        .task { await cyclePrompts() }
-    }
-
-    private func breathe() async {
-        while !Task.isCancelled {
-            withAnimation(.easeInOut(duration: Self.inhale)) { breathingIn = true }
-            try? await Task.sleep(for: .seconds(Self.inhale))
-            if Task.isCancelled { return }
-            withAnimation(.easeInOut(duration: Self.exhale)) { breathingIn = false }
-            try? await Task.sleep(for: .seconds(Self.exhale))
-        }
-    }
-
-    private func cyclePrompts() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(Self.promptSeconds))
-            if Task.isCancelled { return }
-            withAnimation(.easeInOut(duration: 1.5)) { promptIndex += 1 }
-        }
+        .padding(inWindow ? 0 : 36)
+        .frame(width: inWindow ? nil : 760)
+        .glassBackgroundEffect(displayMode: inWindow ? .never : .always)
     }
 }
 
-/// Soft, layered glow that swells on the in-breath and settles on the out-breath.
-private struct BreathingOrb: View {
-    let expanded: Bool
+// MARK: - Rest
 
-    // Icy, snow-light colours to match the mountains.
-    private let lavender = Color(red: 0.70, green: 0.78, blue: 0.98)
-    private let seafoam  = Color(red: 0.62, green: 0.86, blue: 0.95)
+/// Gentle words for the first few breaths of each rest, then only a faint progress line.
+struct RestHUD: View {
+    @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        ZStack {
-            // Outer halo
-            Circle()
-                .fill(RadialGradient(colors: [seafoam.opacity(0.35), .clear],
-                                     center: .center, startRadius: 40, endRadius: 190))
-                .scaleEffect(expanded ? 1.0 : 0.7)
-                .blur(radius: 20)
-
-            // Main orb
-            Circle()
-                .fill(RadialGradient(colors: [.white.opacity(0.85), lavender.opacity(0.75), seafoam.opacity(0.55)],
-                                     center: .init(x: 0.42, y: 0.38), startRadius: 4, endRadius: 150))
-                .frame(width: 260, height: 260)
-                .scaleEffect(expanded ? 1.0 : 0.55)
-                .blur(radius: 2)
-                .shadow(color: lavender.opacity(0.5), radius: 40)
-
-            // Faint guide ring at full size
-            Circle()
-                .stroke(.white.opacity(0.12), lineWidth: 1.5)
-                .frame(width: 260, height: 260)
+        let game = appModel.mathManager
+        TimelineView(.periodic(from: .now, by: 0.1)) { context in
+            let elapsed = game.restElapsed(at: context.date)
+            let showWords = elapsed < MathProblemManager.breathCycle * 3
+            let inhaling = game.isInhaling(at: context.date)
+            VStack(spacing: 16) {
+                Text(game.phase == .relaxAfter ? "Well done — now relax and breathe" : "Relax and breathe")
+                    .font(.title2)
+                    .opacity(elapsed < 6 ? 0.85 : 0)
+                Text(inhaling ? "Breathe in…" : "Breathe out…")
+                    .font(.system(size: 40, weight: .light, design: .rounded))
+                    .opacity(showWords ? 0.8 : 0)
+                ProgressView(value: game.restProgress(at: context.date))
+                    .tint(.white)
+                    .frame(width: 320)
+                    .opacity(0.35)
+            }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.35), radius: 6)
+            .animation(.easeInOut(duration: 1.2), value: showWords)
+            .animation(.easeInOut(duration: 0.8), value: inhaling)
         }
-        .accessibilityHidden(true)
-    }
-}
-
-/// A small, still grey dot so researchers can see logging is on without a pulsing red badge.
-private struct QuietLoggingDot: View {
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(.white.opacity(0.4)).frame(width: 7, height: 7)
-            Text("Logging").font(.caption).foregroundStyle(.tertiary)
-        }
-        .accessibilityLabel("Logging is on")
     }
 }
 
@@ -223,13 +182,7 @@ struct TestIntroView: View {
     let onStart: () -> Void
 
     var body: some View {
-        VStack(spacing: 36) {
-            HStack {
-                RecordingBadge()
-                Spacer()
-            }
-            .padding(.trailing, 140)
-
+        VStack(spacing: 32) {
             VStack(spacing: 12) {
                 Text("Math Test")
                     .font(.extraLargeTitle)
@@ -255,9 +208,24 @@ struct TestIntroView: View {
             .buttonStyle(.borderedProminent)
             .tint(.green)
             .controlSize(.extraLarge)
-
-            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct StepRow: View {
+    let number: Int
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text("\(number)")
+                .font(.title3.bold())
+                .frame(width: 40, height: 40)
+                .background(.blue.opacity(0.25), in: Circle())
+            Text(text)
+                .font(.title3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

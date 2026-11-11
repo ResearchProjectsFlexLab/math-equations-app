@@ -8,38 +8,125 @@
 import SwiftUI
 import RealityKit
 
-/// Surroundings for the session. During the 1-minute rests the participant sits in a
-/// calm, snowy mountain range (see MountainScene). During the test it switches to a
-/// distraction-free "test room": a dark dome, a softly lit floor and a faint horizon
-/// ring, so the participant only sees the questions.
+/// The whole session after Start: the participant sits in a quiet alpine valley (AlpineScene)
+/// for the instructions and both rests, and the scene crossfades to a plain, dark "test room"
+/// for the math test. Panels float in front of them; during the rests only faint text shows.
+/// Pressing the Digital Crown ends the session early; what was recorded is still saved.
 struct ImmersiveView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @State private var stage = SceneStage()
 
-    private var isResting: Bool {
-        let phase = appModel.mathManager.phase
-        return phase == .relaxBefore || phase == .relaxAfter
-    }
+    private var game: MathProblemManager { appModel.mathManager }
 
     var body: some View {
-        RealityView { content in
-            let room = Self.makeTestRoom()
-            room.name = Self.testRoomName
-            content.add(room)
-
-            let mountains = await MountainScene.make()
-            mountains.isEnabled = false
-            content.add(mountains)
-        } update: { content in
-            // Snowy mountains for the rest minutes; the plain, dark room for the test itself.
-            let resting = isResting
-            content.entities.first { $0.name == MountainScene.entityName }?.isEnabled = resting
-            content.entities.first { $0.name == Self.testRoomName }?.isEnabled = !resting
+        RealityView { content, attachments in
+            content.add(stage.root)
+            if let panel = attachments.entity(for: "panel") {
+                panel.position = [0, 1.25, -1.5]
+                stage.panel = panel
+                stage.root.addChild(panel)
+            }
+            if let rest = attachments.entity(for: "rest") {
+                rest.position = [0, 0.95, -2.6]
+                stage.restHUD = rest
+                stage.root.addChild(rest)
+            }
+            // Sync every rendered frame for smooth fades and the breathing light.
+            stage.updates = content.subscribe(to: SceneEvents.Update.self) { _ in
+                stage.sync(with: appModel.mathManager)
+            }
+        } attachments: {
+            Attachment(id: "panel") {
+                SessionPanel().environment(appModel)
+            }
+            Attachment(id: "rest") {
+                RestHUD().environment(appModel)
+            }
+        }
+        .persistentSystemOverlays(.hidden)
+        .onAppear {
+            appModel.immersiveSpaceState = .open
+            if appModel.isOpeningSpace {
+                appModel.isOpeningSpace = false
+                game.begin()
+                // Nothing should float between the participant and the scene.
+                dismissWindow(id: AppModel.controlWindowID)
+            } else if !game.isRunning {
+                // Opened without a session (e.g. restored by the system): don't trap the participant.
+                Task { await dismissImmersiveSpace() }
+            }
+        }
+        .onDisappear {
+            appModel.immersiveSpaceState = .closed
+            if game.isRunning { game.stop() }      // Digital Crown: end early and save the log
+            showControlWindow()
+        }
+        .onChange(of: game.phase) { _, phase in
+            if phase == .finished || phase == .ready {
+                showControlWindow()
+                Task { await dismissImmersiveSpace() }
+            }
         }
     }
 
-    private static let testRoomName = "TestRoom"
+    /// openWindow makes a new window each call, so only open one if none is showing.
+    private func showControlWindow() {
+        guard !appModel.controlWindowIsOpen else { return }
+        appModel.controlWindowIsOpen = true
+        openWindow(id: AppModel.controlWindowID)
+    }
+}
 
-    private static func makeTestRoom() -> Entity {
+@MainActor
+final class SceneStage {
+    let root = Entity()
+    var updates: EventSubscription?
+    var panel: Entity?
+    var restHUD: Entity?
+
+    private let alpine = AlpineScene()
+    private let testRoom = ImmersiveView.makeTestRoom()
+    private var lastSync: Date?
+
+    init() {
+        root.addChild(alpine.root)
+        testRoom.components.set(OpacityComponent(opacity: 0))
+        testRoom.isEnabled = false
+        root.addChild(testRoom)
+    }
+
+    func sync(with game: MathProblemManager) {
+        let now = Date()
+        let dt = Float(min(0.1, now.timeIntervalSince(lastSync ?? now)))
+        lastSync = now
+
+        let phase = game.phase
+        let testing = phase == .testIntro || phase == .countdown || phase == .running
+        Self.fade(testRoom, toward: testing ? 1 : 0, dt: dt)
+        Self.fade(alpine.root, toward: testing ? 0 : 1, dt: dt)
+        if alpine.root.isEnabled {
+            let resting = phase == .relaxBefore || phase == .relaxAfter
+            alpine.update(breath: resting ? game.breath(at: now) : 0.35, now: now)
+        }
+        panel?.isEnabled = phase == .instructions || testing
+        restHUD?.isEnabled = phase == .relaxBefore || phase == .relaxAfter
+    }
+
+    /// Fades an entity's opacity toward a target over about two-thirds of a second, hiding it at zero.
+    private static func fade(_ entity: Entity, toward target: Float, dt: Float) {
+        let current = entity.components[OpacityComponent.self]?.opacity ?? 1
+        let step = dt * 1.5
+        let next = current < target ? min(target, current + step) : max(target, current - step)
+        entity.components.set(OpacityComponent(opacity: next))
+        entity.isEnabled = next > 0.001
+    }
+}
+
+extension ImmersiveView {
+    static func makeTestRoom() -> Entity {
         let root = Entity()
 
         // Dome: a large sphere flipped inside-out so we see its inner surface.

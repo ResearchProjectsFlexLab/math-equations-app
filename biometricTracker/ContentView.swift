@@ -9,11 +9,13 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The small control window: a Start button, and the results at the end.
+/// The rest of the session happens in the immersive mountain scene.
 struct ContentView: View {
 
     @Environment(AppModel.self) private var appModel
-    @Environment(\.openImmersiveSpace)    private var openImmersiveSpace
-    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @State private var notice: String?
 
     private var game: MathProblemManager { appModel.mathManager }
 
@@ -21,81 +23,51 @@ struct ContentView: View {
         ZStack {
             switch game.phase {
             case .ready:
-                WelcomeView(onStart: startBaseline)
-                    .transition(.opacity)
-            case .relaxBefore:
-                RestView(isAfterTest: false, remaining: game.restTimeRemaining)
-                    .transition(.opacity)
-            case .testIntro:
-                TestIntroView(onStart: startTest)
-                    .transition(.opacity)
-            case .relaxAfter:
-                RestView(isAfterTest: true, remaining: game.restTimeRemaining)
-                    .transition(.opacity)
-            case .countdown:
-                CountdownView(value: game.countdownValue)
-                    .transition(.opacity)
-            case .running:
-                TestView()
+                WelcomeView(isOpening: appModel.isOpeningSpace,
+                            onStart: { Task { await start() } },
+                            inWindow: runInWindow)
                     .transition(.opacity)
             case .finished:
                 ResultsView(onRestart: { game.reset() })
                     .transition(.opacity)
+            default:
+                // Only seen if the immersive scene couldn't open: run the session here instead.
+                SessionPanel(inWindow: true)
+                    .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.35), value: game.phase)
-        // However the session ends (Stop, or the rest after the test is over), leave the test room.
-        .onChange(of: game.phase) { _, phase in
-            if phase == .finished { Task { await leaveTestRoom() } }
-        }
         .padding(32)
-        .frame(minWidth: 820, minHeight: 720)
-        // Stop is always reachable while logging is on. One press ends the session and saves the log.
-        .overlay(alignment: .topTrailing) {
-            if game.isRunning {
-                StopControl(onStop: stopTest,
-                            quiet: game.phase == .relaxBefore || game.phase == .relaxAfter)
-                    .padding(24)
+        .frame(minWidth: 700, minHeight: 520)
+        .overlay(alignment: .bottom) {
+            if let notice {
+                Text(notice).font(.footnote).foregroundStyle(.secondary).padding(.bottom, 10)
             }
         }
+        .onAppear { appModel.controlWindowIsOpen = true }
+        .onDisappear { appModel.controlWindowIsOpen = false }
     }
 
-    // MARK: - Actions
-
-    /// Starts logging and the baseline, inside the calm test room.
-    private func startBaseline() {
-        game.startBaseline()
-        Task { await enterTestRoom() }
-    }
-
-    private func startTest() {
-        game.start()
-        Task { await enterTestRoom() }   // no-op if the room is already open
-    }
-
-    private func stopTest() {
-        game.stop()   // stops logging and saves the log file automatically
-    }
-
-    private func enterTestRoom() async {
-        guard appModel.immersiveSpaceState == .closed else { return }
-        appModel.immersiveSpaceState = .inTransition
-        switch await openImmersiveSpace(id: appModel.immersiveSpaceID) {
-        case .opened: break
-        default:      appModel.immersiveSpaceState = .closed
+    /// Opens the mountain scene. The scene begins the session when it appears.
+    private func start() async {
+        notice = nil
+        appModel.isOpeningSpace = true
+        let result = await openImmersiveSpace(id: appModel.immersiveSpaceID)
+        if result != .opened, appModel.isOpeningSpace {
+            notice = "Couldn't open the immersive scene, so the session is running here instead."
+            runInWindow()
         }
     }
 
-    private func leaveTestRoom() async {
-        guard appModel.immersiveSpaceState == .open else { return }
-        appModel.immersiveSpaceState = .inTransition
-        await dismissImmersiveSpace()
+    private func runInWindow() {
+        appModel.isOpeningSpace = false
+        game.begin()
     }
 }
 
 // MARK: - Countdown
 
-private struct CountdownView: View {
+struct CountdownView: View {
     let value: Int
 
     var body: some View {
@@ -119,7 +91,7 @@ private struct CountdownView: View {
 
 // MARK: - Test in progress
 
-private struct TestView: View {
+struct TestView: View {
     @Environment(AppModel.self) private var appModel
 
     private var game: MathProblemManager { appModel.mathManager }
@@ -205,7 +177,7 @@ private struct TestView: View {
 }
 
 /// Time left in the whole test, e.g. "2:41 left". Turns orange in the last 30 seconds.
-private struct TestClock: View {
+struct TestClock: View {
     let remaining: TimeInterval
 
     var body: some View {
@@ -219,7 +191,7 @@ private struct TestClock: View {
     }
 }
 
-private struct TimerBar: View {
+struct TimerBar: View {
     let remaining: Double
     let total: Double
     let paused: Bool
@@ -253,7 +225,7 @@ private struct TimerBar: View {
     }
 }
 
-private struct FeedbackLine: View {
+struct FeedbackLine: View {
     let result: Bool?
     let timedOut: Bool
     let correctAnswer: String
@@ -281,7 +253,7 @@ private struct FeedbackLine: View {
 
 // MARK: - Results
 
-private struct ResultsView: View {
+struct ResultsView: View {
     @Environment(AppModel.self) private var appModel
     let onRestart: () -> Void
 
@@ -345,7 +317,7 @@ private struct ResultsView: View {
 
 // MARK: - Shared pieces
 
-private struct StopControl: View {
+struct StopControl: View {
     let onStop: () -> Void
     /// During the rest the button stays available but goes soft grey, so it doesn't draw the eye.
     var quiet: Bool = false
@@ -383,7 +355,7 @@ struct RecordingBadge: View {
     }
 }
 
-private struct MiniStat: View {
+struct MiniStat: View {
     let label: String
     let value: String
     let color: Color

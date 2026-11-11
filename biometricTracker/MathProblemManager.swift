@@ -59,8 +59,9 @@ struct MathProblem: Identifiable {
 
 // MARK: - Test Phase
 enum TestPhase: Equatable {
-    case ready        // before Start Baseline is pressed
-    case relaxBefore  // baseline: 1 minute of calm, guided breathing before the test
+    case ready        // welcome window, before Start is pressed
+    case instructions // in the mountain scene, waiting for Start baseline
+    case relaxBefore  // baseline: 1 minute of rest in the mountain scene before the test
     case testIntro    // test instructions, waiting for Start Test
     case countdown    // Start Test pressed, 3-2-1 before first question
     case running      // questions on screen
@@ -81,6 +82,15 @@ final class MathProblemManager {
 
     /// Length of the calm rest before and after the test.
     static let restDuration: TimeInterval = 60
+
+    /// Normal resting breathing (12 per minute) for the rest scene. Not slow paced breathing,
+    /// which would change heart-rate variability and stop being a resting baseline.
+    static let inhaleSeconds: TimeInterval = 2
+    static let exhaleSeconds: TimeInterval = 3
+    static var breathCycle: TimeInterval { inhaleSeconds + exhaleSeconds }
+
+    /// When the current rest began.
+    var restStartedAt: Date?
 
     /// Time left in the current 1-minute rest.
     var restTimeRemaining: TimeInterval = MathProblemManager.restDuration
@@ -131,13 +141,45 @@ final class MathProblemManager {
 
     // MARK: - Baseline
 
-    /// Starts logging and the baseline: 1 minute of guided rest, then the test instructions.
-    func startBaseline() {
+    /// Opens a new session and its log, and shows the baseline instructions.
+    func begin() {
         guard !isRunning else { return }
         cancelTasks()
         resetSession()
-        addLog("BASELINE START — \(Int(Self.restDuration))s guided rest")
+        phase = .instructions
+        addLog("INSTRUCTIONS SHOWN")
+    }
+
+    /// The participant read the instructions and pressed Start baseline.
+    func startBaseline() {
+        if phase == .ready || phase == .finished { begin() }
+        guard phase == .instructions else { return }
+        addLog("BASELINE START — \(Int(Self.restDuration))s rest | scene: alpine valley | breathing \(Int(60 / Self.breathCycle))/min (in \(Int(Self.inhaleSeconds))s, out \(Int(Self.exhaleSeconds))s)")
         startRest(after: false)
+    }
+
+    // MARK: - Breathing guide
+
+    /// Seconds into the current rest.
+    func restElapsed(at now: Date = .now) -> TimeInterval {
+        guard let restStartedAt else { return 0 }
+        return max(0, now.timeIntervalSince(restStartedAt))
+    }
+
+    /// 0 = fully out, 1 = fully in. Eased so the motion has no sudden changes.
+    func breath(at now: Date = .now) -> Float {
+        let t = restElapsed(at: now).truncatingRemainder(dividingBy: Self.breathCycle)
+        let x = t < Self.inhaleSeconds ? t / Self.inhaleSeconds : 1 - (t - Self.inhaleSeconds) / Self.exhaleSeconds
+        return Float(x * x * (3 - 2 * x))
+    }
+
+    func isInhaling(at now: Date = .now) -> Bool {
+        restElapsed(at: now).truncatingRemainder(dividingBy: Self.breathCycle) < Self.inhaleSeconds
+    }
+
+    /// 0 → 1 over the current rest.
+    func restProgress(at now: Date = .now) -> Double {
+        min(1, restElapsed(at: now) / Self.restDuration)
     }
 
     // MARK: - Rest (before and after the test)
@@ -146,6 +188,7 @@ final class MathProblemManager {
         restTask?.cancel()
         phase = after ? .relaxAfter : .relaxBefore
         restTimeRemaining = Self.restDuration
+        restStartedAt = .now
         addLog("REST START — \(after ? "after" : "before") test | \(Int(Self.restDuration))s")
         let began = CACurrentMediaTime()
         restTask = Task {
@@ -246,6 +289,12 @@ final class MathProblemManager {
 
     func stop() {
         guard isRunning else { return }
+        if phase == .instructions {
+            // Nothing has been recorded yet; just go back to the start.
+            cancelTasks()
+            phase = .ready
+            return
+        }
         cancelTasks()
         phase = .finished
         lastCorrect = nil
