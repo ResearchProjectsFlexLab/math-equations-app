@@ -21,7 +21,19 @@ struct ContentView: View {
         ZStack {
             switch game.phase {
             case .ready:
-                WelcomeView(onStart: startTest)
+                WelcomeView(onStart: startBaseline)
+                    .transition(.opacity)
+            case .practice:
+                PracticeView()
+                    .transition(.opacity)
+            case .relaxBefore:
+                RestView(isAfterTest: false, remaining: game.restTimeRemaining)
+                    .transition(.opacity)
+            case .testIntro:
+                TestIntroView(onStart: startTest)
+                    .transition(.opacity)
+            case .relaxAfter:
+                RestView(isAfterTest: true, remaining: game.restTimeRemaining)
                     .transition(.opacity)
             case .countdown:
                 CountdownView(value: game.countdownValue)
@@ -35,13 +47,13 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.35), value: game.phase)
-        // However the test ends (Stop or all questions done), leave the test room.
+        // However the session ends (Stop, or the rest after the test is over), leave the test room.
         .onChange(of: game.phase) { _, phase in
             if phase == .finished { Task { await leaveTestRoom() } }
         }
         .padding(32)
         .frame(minWidth: 820, minHeight: 720)
-        // Stop is always reachable while logging is on. One press ends the test and saves the log.
+        // Stop is always reachable while logging is on. One press ends the session and saves the log.
         .overlay(alignment: .topTrailing) {
             if game.isRunning {
                 StopControl(onStop: stopTest)
@@ -52,9 +64,15 @@ struct ContentView: View {
 
     // MARK: - Actions
 
+    /// Starts logging and the baseline, inside the calm test room.
+    private func startBaseline() {
+        game.startBaseline()
+        Task { await enterTestRoom() }
+    }
+
     private func startTest() {
         game.start()
-        Task { await enterTestRoom() }
+        Task { await enterTestRoom() }   // no-op if the room is already open
     }
 
     private func stopTest() {
@@ -74,34 +92,6 @@ struct ContentView: View {
         guard appModel.immersiveSpaceState == .open else { return }
         appModel.immersiveSpaceState = .inTransition
         await dismissImmersiveSpace()
-    }
-}
-
-// MARK: - Welcome
-
-private struct WelcomeView: View {
-    let onStart: () -> Void
-
-    var body: some View {
-        VStack(spacing: 36) {
-            VStack(spacing: 12) {
-                Text("Math Test")
-                    .font(.extraLargeTitle)
-                Text("Look at an answer and pinch to choose it.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-
-            Button(action: onStart) {
-                Label("Start", systemImage: "play.fill")
-                    .font(.title.weight(.semibold))
-                    .frame(minWidth: 300, minHeight: 80)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
-            .controlSize(.extraLarge)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -305,7 +295,7 @@ private struct ResultsView: View {
                 Text("Test Complete")
                     .font(.extraLargeTitle2)
                 if game.completedAllQuestions {
-                    Text("Time's up — the \(Int(MathProblemManager.testDuration / 60))-minute test is over.")
+                    Text("The \(Int(MathProblemManager.testDuration / 60))-minute test is over. Thank you!")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
@@ -373,7 +363,7 @@ private struct StopControl: View {
     }
 }
 
-private struct RecordingBadge: View {
+struct RecordingBadge: View {
     @State private var pulse = false
 
     var body: some View {

@@ -59,10 +59,35 @@ struct MathProblem: Identifiable {
 
 // MARK: - Test Phase
 enum TestPhase: Equatable {
-    case ready       // before Start is pressed
-    case countdown   // Start pressed, logging on, 3-2-1 before first question
-    case running     // questions on screen
-    case finished    // Stop pressed, logging closed, log ready to download
+    case ready        // before Start Baseline is pressed
+    case practice     // baseline part 1: pick the colour you see, to learn look + pinch
+    case relaxBefore  // baseline part 2: 1 minute of calm breathing before the test
+    case testIntro    // test instructions, waiting for Start Test
+    case countdown    // Start Test pressed, 3-2-1 before first question
+    case running      // questions on screen
+    case relaxAfter   // 1 minute of calm breathing after the test
+    case finished     // logging closed, log saved
+}
+
+// MARK: - Colour practice
+/// The colours used in the baseline practice. The view maps each to a SwiftUI colour.
+enum PracticeColour: String, CaseIterable {
+    case red, blue, green, yellow, orange, purple
+
+    var name: String { rawValue.capitalized }
+}
+
+struct ColourTrial: Equatable {
+    let target:  PracticeColour
+    let options: [PracticeColour]
+
+    var correctIndex: Int { options.firstIndex(of: target)! }
+
+    static func generate(avoiding previous: PracticeColour? = nil) -> ColourTrial {
+        let target = PracticeColour.allCases.filter { $0 != previous }.randomElement()!
+        let others = PracticeColour.allCases.filter { $0 != target }.shuffled().prefix(3)
+        return ColourTrial(target: target, options: ([target] + others).shuffled())
+    }
 }
 
 // MARK: - Manager
@@ -75,6 +100,22 @@ final class MathProblemManager {
 
     /// The test ends on its own (and saves the log) after this long. Counted from the first question.
     static let testDuration: TimeInterval = 3 * 60
+
+    /// How many colour questions the baseline practice asks.
+    static let practiceTrialCount = 5
+
+    /// Length of the calm rest before and after the test.
+    static let restDuration: TimeInterval = 60
+
+    // Baseline practice state
+    var practiceTrial:        ColourTrial = .generate()
+    var practiceNumber:       Int         = 0
+    var practiceCorrectCount: Int         = 0
+    var practiceLastCorrect:  Bool?       = nil
+    var practiceLastIndex:    Int?        = nil
+
+    /// Time left in the current 1-minute rest.
+    var restTimeRemaining: TimeInterval = MathProblemManager.restDuration
 
     /// Time left in the whole test.
     var testTimeRemaining: TimeInterval = MathProblemManager.testDuration
@@ -104,8 +145,8 @@ final class MathProblemManager {
     var saveError:         String?     = nil
     var log:               [LogEntry]  = []
 
-    /// True from the moment Start is pressed until Stop is pressed — i.e. while logging is on.
-    var isRunning: Bool { phase == .countdown || phase == .running }
+    /// True from the moment Start Baseline is pressed until the session ends — i.e. while logging is on.
+    var isRunning: Bool { phase != .ready && phase != .finished }
 
     let trial = TrialSession()
 
@@ -118,37 +159,108 @@ final class MathProblemManager {
     private var countdownTask:     Task<Void, Never>?
     private var timerTask:         Task<Void, Never>?
     private var testClockTask:     Task<Void, Never>?
+    private var practiceTask:      Task<Void, Never>?
+    private var restTask:          Task<Void, Never>?
+
+    // MARK: - Baseline
+
+    /// Starts logging and the baseline: colour practice, then 1 minute of rest, then the test instructions.
+    func startBaseline() {
+        guard !isRunning else { return }
+        cancelTasks()
+        resetSession()
+        addLog("BASELINE START — colour practice (\(Self.practiceTrialCount) questions), then \(Int(Self.restDuration))s rest")
+        phase = .practice
+        practiceNumber = 0
+        practiceCorrectCount = 0
+        nextPracticeTrial()
+    }
+
+    func submitPractice(optionIndex: Int) {
+        guard phase == .practice, practiceLastCorrect == nil,
+              practiceTrial.options.indices.contains(optionIndex) else { return }
+        let picked = practiceTrial.options[optionIndex]
+        let correct = picked == practiceTrial.target
+        practiceLastCorrect = correct
+        practiceLastIndex = optionIndex
+        if correct { practiceCorrectCount += 1 }
+        addLog("PRACTICE ANSWER [\(practiceNumber)] — '\(picked.name)' \(correct ? "✓ correct" : "✗ wrong | correct: '\(practiceTrial.target.name)'")")
+
+        practiceTask = Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
+            if practiceNumber >= Self.practiceTrialCount {
+                addLog("PRACTICE END — \(practiceCorrectCount)/\(Self.practiceTrialCount) correct")
+                startRest(after: false)
+            } else {
+                nextPracticeTrial()
+            }
+        }
+    }
+
+    private func nextPracticeTrial() {
+        practiceLastCorrect = nil
+        practiceLastIndex = nil
+        practiceTrial = .generate(avoiding: practiceNumber == 0 ? nil : practiceTrial.target)
+        practiceNumber += 1
+        addLog("PRACTICE QUESTION [\(practiceNumber)] — colour: \(practiceTrial.target.name) | Options: \(practiceTrial.options.map(\.name).joined(separator: ", "))")
+    }
+
+    // MARK: - Rest (before and after the test)
+
+    private func startRest(after: Bool) {
+        restTask?.cancel()
+        phase = after ? .relaxAfter : .relaxBefore
+        restTimeRemaining = Self.restDuration
+        addLog("REST START — \(after ? "after" : "before") test | \(Int(Self.restDuration))s")
+        let began = CACurrentMediaTime()
+        restTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Task.isCancelled { return }
+                let left = Self.restDuration - (CACurrentMediaTime() - began)
+                restTimeRemaining = max(0, left)
+                if left <= 0 {
+                    endRest()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Ends the current rest. Called by the rest timer; tests can call it to skip the wait.
+    func endRest() {
+        switch phase {
+        case .relaxBefore:
+            restTask?.cancel(); restTask = nil
+            restTimeRemaining = 0
+            addLog("REST END — before test")
+            phase = .testIntro
+        case .relaxAfter:
+            restTask?.cancel(); restTask = nil
+            restTimeRemaining = 0
+            addLog("REST END — after test")
+            stop()
+        default:
+            break
+        }
+    }
 
     // MARK: - Start / Stop
 
-    /// Starts logging immediately, then shows a countdown before the first question.
+    /// Starts the math test with a countdown before the first question.
+    /// From the test instructions screen this continues the baseline's log; from the
+    /// welcome screen it starts a fresh log without a baseline.
     /// Pass `countdown: 0` to show the first question right away.
     func start(countdown: Int = 3) {
-        guard !isRunning else { return }
+        guard phase == .ready || phase == .finished || phase == .testIntro else { return }
         cancelTasks()
-        score = 0
-        correctCount = 0
-        wrongCount = 0
-        timedOutCount = 0
-        totalAnswered = 0
-        streak = 0
-        lastCorrect = nil
-        lastAnsweredIndex = nil
-        currentLevel = .easy
-        questionIndex = 0
-        reactionTimesMs = []
-        trial.events = []
-        trial.lastReactionMs = nil
-        log = []
-        sessionStartDate = .now
-        sessionEndDate = nil
-        savedLogURL = nil
-        saveError = nil
-        completedAllQuestions = false
-        testTimeRemaining = Self.testDuration
-
-        let who = participantID.trimmingCharacters(in: .whitespacesAndNewlines)
-        addLog("SESSION START — \(formattedDate())" + (who.isEmpty ? "" : " | participant: \(who)"))
+        if phase == .testIntro {
+            resetTestScores()
+            addLog("TEST START — \(Int(Self.testDuration / 60)) minute math test")
+        } else {
+            resetSession()
+        }
 
         guard countdown > 0 else {
             beginQuestions()
@@ -165,6 +277,37 @@ final class MathProblemManager {
             }
             beginQuestions()
         }
+    }
+
+    /// Clears everything and opens a new log with SESSION START.
+    private func resetSession() {
+        resetTestScores()
+        log = []
+        sessionStartDate = .now
+        sessionEndDate = nil
+        savedLogURL = nil
+        saveError = nil
+
+        let who = participantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        addLog("SESSION START — \(formattedDate())" + (who.isEmpty ? "" : " | participant: \(who)"))
+    }
+
+    private func resetTestScores() {
+        score = 0
+        correctCount = 0
+        wrongCount = 0
+        timedOutCount = 0
+        totalAnswered = 0
+        streak = 0
+        lastCorrect = nil
+        lastAnsweredIndex = nil
+        currentLevel = .easy
+        questionIndex = 0
+        reactionTimesMs = []
+        trial.events = []
+        trial.lastReactionMs = nil
+        completedAllQuestions = false
+        testTimeRemaining = Self.testDuration
     }
 
     func stop() {
@@ -341,13 +484,17 @@ final class MathProblemManager {
     }
 
     // MARK: - Helpers
-    /// Ends the test because the time limit was reached. The log is saved automatically.
+    /// Ends the test because the time limit was reached, then starts the 1-minute rest.
+    /// The log is saved automatically when the rest ends.
     func endBecauseTimeIsUp() {
         guard phase == .running else { return }
+        cancelTasks()
         completedAllQuestions = true
         testTimeRemaining = 0
+        lastCorrect = nil
+        lastAnsweredIndex = nil
         addLog("SESSION COMPLETE — \(Int(Self.testDuration / 60)) minute time limit reached")
-        stop()
+        startRest(after: true)
     }
 
     private func beginQuestions() {
@@ -413,6 +560,8 @@ final class MathProblemManager {
         countdownTask?.cancel(); countdownTask = nil
         timerTask?.cancel();     timerTask = nil
         testClockTask?.cancel(); testClockTask = nil
+        practiceTask?.cancel();  practiceTask = nil
+        restTask?.cancel();      restTask = nil
     }
 
     func addLog(_ message: String) {
