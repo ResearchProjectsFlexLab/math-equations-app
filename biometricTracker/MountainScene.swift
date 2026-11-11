@@ -2,13 +2,18 @@
 //  MountainScene.swift
 //  biometricTracker
 //
-//  A calm, 360° snowy mountain range shown around the participant during the
-//  1-minute rests. The panorama is drawn in code (no image files), and its random
-//  shapes come from a fixed seed, so every participant sees exactly the same scene.
+//  A calm, snowy mountain scene shown around the participant during the 1-minute rests.
+//
+//  If the app contains a photo named "MountainView.jpg":
+//    • a 360° photo (about twice as wide as tall) is wrapped all the way around;
+//    • any other photo becomes a huge curved vista in front of the participant whose
+//      edges fade into a soft sky and snowfield coloured to match the photo.
+//  Without a photo, a drawn mountain range is used instead. Snow falls in every case.
 //
 
 import CoreGraphics
 import Foundation
+import ImageIO
 import RealityKit
 import UIKit
 
@@ -16,26 +21,238 @@ enum MountainScene {
 
     static let entityName = "MountainScene"
 
-    /// Builds the whole scene: the panorama sphere plus gentle falling snow.
+    /// Name of the photo file in the app bundle. Replace the file (same name) to change the view.
+    static let photoName = "MountainView"
+
+    /// How wide the curved photo appears, in degrees of the participant's view.
+    static let photoDegreesWide: Float = 110
+    /// Distance from the participant to the photo, in metres.
+    static let photoDistance: Float = 14
+    /// Which row of the photo sits at eye level (0 = top, 1 = bottom).
+    static let photoEyeLevel: Float = 0.55
+
+    /// Eye height used for the horizon.
+    private static let eyeHeight: Float = 1.4
+
+    /// Builds the whole scene: the mountains plus gentle falling snow.
     @MainActor
     static func make() async -> Entity {
         let root = Entity()
         root.name = entityName
 
-        if let image = drawPanorama(),
-           let texture = try? await TextureResource(image: image, options: .init(semantic: .color)) {
+        if let photo = loadPhoto() {
+            let aspect = CGFloat(photo.width) / CGFloat(photo.height)
+            if aspect > 1.9 && aspect < 2.1 {
+                await addPanoramaSphere(photo: photo, to: root)
+            } else {
+                await addCurvedVista(photo: photo, to: root)
+            }
+        } else if let image = drawPanorama(),
+                  let texture = try? await TextureResource(image: image, options: .init(semantic: .color)) {
             var material = UnlitMaterial()
             material.color = .init(texture: .init(texture))
             let mesh = MeshResource.generateSphere(radius: 40)
             let sky = ModelEntity(mesh: mesh, materials: [material])
             sky.scale = SIMD3<Float>(-1, 1, 1)   // inside-out so we see the inner surface
-            sky.position = [0, 1.4, 0]           // horizon at about eye level
+            sky.position = [0, eyeHeight, 0]     // horizon at about eye level
             sky.orientation = facingForward(u: sunU, on: mesh, scale: sky.scale)
             root.addChild(sky)
         }
 
         root.addChild(makeSnowfall())
         return root
+    }
+
+    // MARK: - Photo
+
+    private static func loadPhoto() -> CGImage? {
+        for ext in ["jpg", "jpeg", "png", "heic"] {
+            if let url = Bundle.main.url(forResource: photoName, withExtension: ext),
+               let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                return image
+            }
+        }
+        return nil
+    }
+
+    /// A full 360° photo wrapped around the participant, its centre straight ahead.
+    @MainActor
+    private static func addPanoramaSphere(photo: CGImage, to root: Entity) async {
+        let mesh = MeshResource.generateSphere(radius: 40)
+        let image = sphereNeedsFlip(mesh) ? flippedVertically(photo) ?? photo : photo
+        guard let texture = try? await TextureResource(image: image, options: .init(semantic: .color)) else { return }
+        var material = UnlitMaterial()
+        material.color = .init(texture: .init(texture))
+        let sky = ModelEntity(mesh: mesh, materials: [material])
+        sky.scale = SIMD3<Float>(-1, 1, 1)
+        sky.position = [0, eyeHeight, 0]
+        sky.orientation = facingForward(u: 0.5, on: mesh, scale: sky.scale)
+        root.addChild(sky)
+    }
+
+    /// A regular photo shown as a giant curved wall in front of the participant, fading
+    /// softly at its edges into a sky and snowfield sampled from the photo's own colours.
+    @MainActor
+    private static func addCurvedVista(photo: CGImage, to root: Entity) async {
+        let profile = verticalColourProfile(of: photo)
+
+        // Soft sky all around, matched to the photo.
+        let skyMesh = MeshResource.generateSphere(radius: 40)
+        if let sky = drawSoftSky(top: profile.first ?? rgb(0.8, 0.84, 0.9),
+                                 horizon: profile[profile.count / 2],
+                                 ground: profile.last ?? rgb(0.85, 0.88, 0.93),
+                                 flip: sphereNeedsFlip(skyMesh)),
+           let texture = try? await TextureResource(image: sky, options: .init(semantic: .color)) {
+            var material = UnlitMaterial()
+            material.color = .init(texture: .init(texture))
+            let dome = ModelEntity(mesh: skyMesh, materials: [material])
+            dome.scale = SIMD3<Float>(-1, 1, 1)
+            dome.position = [0, eyeHeight, 0]
+            root.addChild(dome)
+        }
+
+        // The photo itself, on a curved wall with feathered edges.
+        guard let feathered = featherEdges(photo),
+              let texture = try? await TextureResource(image: feathered, options: .init(semantic: .color)),
+              let mesh = curvedWall(aspect: Float(photo.width) / Float(photo.height)) else { return }
+        var material = UnlitMaterial()
+        material.color = .init(texture: .init(texture))
+        material.blending = .transparent(opacity: 1.0)
+        material.faceCulling = .none
+        let wall = ModelEntity(mesh: mesh, materials: [material])
+        wall.position = [0, eyeHeight, 0]
+        root.addChild(wall)
+    }
+
+    /// A section of a cylinder around the participant, centred straight ahead (-z).
+    @MainActor
+    private static func curvedWall(aspect: Float) -> MeshResource? {
+        let span = photoDegreesWide * .pi / 180
+        let radius = photoDistance
+        let height = radius * span / aspect          // keeps the photo's proportions
+        let top = height * photoEyeLevel
+        let bottom = top - height
+        let topV = planeTopV()                       // match RealityKit's texture orientation
+        let columns = 64
+
+        var positions: [SIMD3<Float>] = []
+        var normals: [SIMD3<Float>] = []
+        var uvs: [SIMD2<Float>] = []
+        for i in 0...columns {
+            let u = Float(i) / Float(columns)
+            let a = (u - 0.5) * span
+            let x = radius * sin(a), z = -radius * cos(a)
+            let inward = SIMD3<Float>(-sin(a), 0, cos(a))
+            positions += [[x, top, z], [x, bottom, z]]
+            normals += [inward, inward]
+            uvs += [[u, topV], [u, 1 - topV]]
+        }
+        var indices: [UInt32] = []
+        for i in 0..<UInt32(columns) {
+            let t0 = i * 2, b0 = t0 + 1, t1 = t0 + 2, b1 = t0 + 3
+            indices += [t0, b0, t1, t1, b0, b1]
+        }
+        var descriptor = MeshDescriptor(name: "MountainVista")
+        descriptor.positions = MeshBuffers.Positions(positions)
+        descriptor.normals = MeshBuffers.Normals(normals)
+        descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(uvs)
+        descriptor.primitives = .triangles(indices)
+        return try? MeshResource.generate(from: [descriptor])
+    }
+
+    /// The texture v at the top edge of a plain plane — planes show images upright,
+    /// so this tells us which way up to map the photo.
+    @MainActor
+    private static func planeTopV() -> Float {
+        let plane = MeshResource.generatePlane(width: 1, height: 1)
+        guard let part = plane.contents.models.first?.parts.first,
+              let uvs = part.textureCoordinates?.elements else { return 1 }
+        let positions = part.positions.elements
+        guard let topIndex = positions.indices.max(by: { positions[$0].y < positions[$1].y }) else { return 1 }
+        return uvs[topIndex].y > 0.5 ? 1 : 0
+    }
+
+    /// True when the sphere maps the top of an upright image to the bottom.
+    @MainActor
+    private static func sphereNeedsFlip(_ mesh: MeshResource) -> Bool {
+        guard let part = mesh.contents.models.first?.parts.first,
+              let uvs = part.textureCoordinates?.elements else { return true }
+        let positions = part.positions.elements
+        guard let topIndex = positions.indices.max(by: { positions[$0].y < positions[$1].y }) else { return true }
+        let sphereTopIsHigh = uvs[topIndex].y > 0.5
+        let planeTopIsHigh = planeTopV() > 0.5
+        return sphereTopIsHigh != planeTopIsHigh
+    }
+
+    /// Fades the photo's left, right, top and bottom edges to transparent.
+    private static func featherEdges(_ image: CGImage) -> CGImage? {
+        let w = image.width, h = image.height
+        let W = CGFloat(w), H = CGFloat(h)
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: W, height: H))
+        ctx.setBlendMode(.destinationIn)
+        let clear = rgb(1, 1, 1, 0), solid = rgb(1, 1, 1, 1)
+        func mask(_ start: CGPoint, _ end: CGPoint, edge: CGFloat) {
+            guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                     colors: [clear, solid, solid, clear] as CFArray,
+                                     locations: [0, edge, 1 - edge, 1]) else { return }
+            ctx.drawLinearGradient(g, start: start, end: end, options: [])
+        }
+        mask(CGPoint(x: 0, y: 0), CGPoint(x: W, y: 0), edge: 0.16)        // left and right
+        // Top fades more than the bottom (CG's y = 0 is the bottom of the image).
+        guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                 colors: [clear, solid, solid, clear] as CFArray,
+                                 locations: [0, 0.10, 0.82, 1]) else { return ctx.makeImage() }
+        ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: H), options: [])
+        return ctx.makeImage()
+    }
+
+    /// Average colours down the photo (top to bottom), used to colour the surrounding sky.
+    private static func verticalColourProfile(of image: CGImage, samples: Int = 9) -> [CGColor] {
+        var pixels = [UInt8](repeating: 0, count: samples * 4)
+        guard let ctx = CGContext(data: &pixels, width: 1, height: samples, bitsPerComponent: 8,
+                                  bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return [] }
+        ctx.interpolationQuality = .medium
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: samples))
+        // Memory row 0 is the top of the image.
+        return (0..<samples).map { r in
+            let i = r * 4
+            return rgb(CGFloat(pixels[i]) / 255, CGFloat(pixels[i + 1]) / 255, CGFloat(pixels[i + 2]) / 255)
+        }
+    }
+
+    /// A gentle sky gradient (zenith → misty horizon → snowfield) for the whole sphere.
+    private static func drawSoftSky(top: CGColor, horizon: CGColor, ground: CGColor,
+                                    flip: Bool, width: Int = 1024, height: Int = 512) -> CGImage? {
+        let W = CGFloat(width), H = CGFloat(height)
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        if !flip {   // draw with y = 0 at the top of the stored image
+            ctx.translateBy(x: 0, y: H)
+            ctx.scaleBy(x: 1, y: -1)
+        }
+        let mist = mix(horizon, rgb(1, 1, 1), 0.35)
+        guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                 colors: [top, mix(top, mist, 0.6), mist, mix(mist, ground, 0.5), ground] as CFArray,
+                                 locations: [0, 0.35, 0.5, 0.58, 1]) else { return nil }
+        ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: H), options: [])
+        _ = W
+        return ctx.makeImage()
+    }
+
+    private static func flippedVertically(_ image: CGImage) -> CGImage? {
+        guard let ctx = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(image.height))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return ctx.makeImage()
     }
 
     /// Where the sun glow sits across the panorama (0 = left edge, 1 = right edge).
@@ -65,26 +282,30 @@ enum MountainScene {
 
     // MARK: - Snowfall
 
-    /// Slow, sparse flakes drifting down around the participant.
+    /// Soft flakes drifting slowly down all around the participant. Flakes are born
+    /// throughout the space (not only overhead) and fade in, so snow is visible the
+    /// moment the rest begins.
     private static func makeSnowfall() -> Entity {
         let entity = Entity()
-        entity.position = [0, 5, 0]
+        entity.position = [0, 2.2, 0]
 
         var emitter = ParticleEmitterComponent()
-        emitter.emitterShape = .plane
-        emitter.emitterShapeSize = [12, 0, 12]
-        emitter.birthLocation = .surface
+        emitter.emitterShape = .box
+        emitter.emitterShapeSize = [9, 4.4, 9]
+        emitter.birthLocation = .volume
         emitter.emissionDirection = [0, -1, 0]
-        emitter.speed = 0.22
-        emitter.speedVariation = 0.08
-        emitter.mainEmitter.birthRate = 70
-        emitter.mainEmitter.lifeSpan = 22
-        emitter.mainEmitter.size = 0.012
-        emitter.mainEmitter.sizeVariation = 0.006
+        emitter.speed = 0.35
+        emitter.speedVariation = 0.12
+        emitter.isEmitting = true
+        emitter.mainEmitter.birthRate = 450
+        emitter.mainEmitter.lifeSpan = 8
+        emitter.mainEmitter.size = 0.03
+        emitter.mainEmitter.sizeVariation = 0.012
+        emitter.mainEmitter.isLightingEnabled = false
         emitter.mainEmitter.blendMode = .alpha
         emitter.mainEmitter.opacityCurve = .gradualFadeInOut
-        emitter.mainEmitter.color = .constant(.single(UIColor(white: 1, alpha: 0.85)))
-        emitter.mainEmitter.noiseStrength = 0.03
+        emitter.mainEmitter.color = .constant(.single(UIColor(white: 1, alpha: 0.95)))
+        emitter.mainEmitter.noiseStrength = 0.06
         emitter.mainEmitter.noiseScale = 1
         entity.components.set(emitter)
         return entity
@@ -102,9 +323,9 @@ enum MountainScene {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
 
-        // CoreGraphics draws from the bottom; flip so y = 0 is the top of the sky.
-        ctx.translateBy(x: 0, y: H)
-        ctx.scaleBy(x: 1, y: -1)
+        // Drawing code below treats y = 0 as the top of the sky. CoreGraphics puts y = 0 at
+        // the bottom, which stores the image upside down — and that is exactly what the
+        // sphere's texture mapping expects, so the mountains appear upright in the headset.
 
         let horizon = H / 2
         let pxPerDegree = H / 180
