@@ -23,9 +23,6 @@ struct ContentView: View {
             case .ready:
                 WelcomeView(onStart: startBaseline)
                     .transition(.opacity)
-            case .practice:
-                PracticeView()
-                    .transition(.opacity)
             case .relaxBefore:
                 RestView(isAfterTest: false, remaining: game.restTimeRemaining)
                     .transition(.opacity)
@@ -56,7 +53,8 @@ struct ContentView: View {
         // Stop is always reachable while logging is on. One press ends the session and saves the log.
         .overlay(alignment: .topTrailing) {
             if game.isRunning {
-                StopControl(onStop: stopTest)
+                StopControl(onStop: stopTest,
+                            quiet: game.phase == .relaxBefore || game.phase == .relaxAfter)
                     .padding(24)
             }
         }
@@ -349,16 +347,18 @@ private struct ResultsView: View {
 
 private struct StopControl: View {
     let onStop: () -> Void
+    /// During the rest the button stays available but goes soft grey, so it doesn't draw the eye.
+    var quiet: Bool = false
 
     var body: some View {
         Button(action: onStop) {
             Label("Stop", systemImage: "stop.fill")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(quiet ? .secondary : .primary)
                 .frame(minWidth: 110, minHeight: 48)
         }
         .buttonStyle(.borderedProminent)
-        .tint(.red)
+        .tint(quiet ? .gray.opacity(0.3) : .red)
         .help("End the test and save the log")
     }
 }

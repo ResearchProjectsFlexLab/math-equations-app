@@ -15,7 +15,7 @@ enum QuestionLogFormat {
             "Math Questions log",
             "Generated: \(stamp(generatedAt))",
             "Entries: \(entries.count)",
-            "A line is written at each step: baseline practice, rests, and each test question and answer.",
+            "A line is written at each step: baseline rest, rest after the test, and each test question and answer.",
             "",
         ]
         lines.append(contentsOf: entries.map(\.formatted))
@@ -38,9 +38,6 @@ enum QuestionLogFormat {
         if message.hasPrefix("SESSION COMPLETE") { return "session_complete" }
         if message.hasPrefix("TIME UP") { return "time_up" }
         if message.hasPrefix("BASELINE START") { return "baseline_start" }
-        if message.hasPrefix("PRACTICE QUESTION") { return "practice_question" }
-        if message.hasPrefix("PRACTICE ANSWER") { return "practice_answer" }
-        if message.hasPrefix("PRACTICE END") { return "practice_end" }
         if message.hasPrefix("REST START") { return "rest_start" }
         if message.hasPrefix("REST END") { return "rest_end" }
         if message.hasPrefix("TEST START") { return "test_start" }

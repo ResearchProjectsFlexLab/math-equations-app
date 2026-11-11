@@ -94,20 +94,13 @@ struct biometricTrackerTests {
         #expect(game.log.filter { $0.message.hasPrefix("NEW QUESTION") }.count == questions)
     }
 
-    @Test @MainActor func baselinePracticeThenRestThenTestInOneLog() throws {
+    @Test @MainActor func baselineStartsWithRestAndStopSavesLog() throws {
         let game = MathProblemManager()
         game.startBaseline()
-        #expect(game.phase == .practice)
+        #expect(game.phase == .relaxBefore)
         #expect(game.isRunning)
-        #expect(game.practiceNumber == 1)
-        #expect(game.practiceTrial.options.count == 4)
-        #expect(Set(game.practiceTrial.options).count == 4)
-        #expect(game.practiceTrial.options.contains(game.practiceTrial.target))
-
-        game.submitPractice(optionIndex: game.practiceTrial.correctIndex)
-        #expect(game.practiceLastCorrect == true)
-        #expect(game.practiceCorrectCount == 1)
-        #expect(game.log.contains { $0.message.hasPrefix("PRACTICE ANSWER") })
+        #expect(game.log.contains { $0.message.hasPrefix("BASELINE START") })
+        #expect(game.log.contains { $0.message.hasPrefix("REST START") })
 
         game.stop()
         #expect(game.phase == .finished)
@@ -118,8 +111,7 @@ struct biometricTrackerTests {
     @Test @MainActor func startTestFromIntroKeepsBaselineLog() {
         let game = MathProblemManager()
         game.startBaseline()
-        // Jump past the practice and rest timers.
-        game.phase = .relaxBefore
+        // Skip the 1-minute rest timer.
         game.endRest()
         #expect(game.phase == .testIntro)
 

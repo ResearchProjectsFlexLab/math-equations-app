@@ -2,8 +2,8 @@
 //  BaselineViews.swift
 //  biometricTracker
 //
-//  Screens for the baseline before the math test: instructions, colour practice
-//  (to learn look + pinch), and the calm 1-minute rest used before and after the test.
+//  Screens for the baseline before the math test: instructions, and the calm,
+//  guided 1-minute rest used before and after the test.
 //
 
 import SwiftUI
@@ -18,16 +18,15 @@ struct WelcomeView: View {
             VStack(spacing: 12) {
                 Text("Welcome")
                     .font(.extraLargeTitle)
-                Text("First, a short warm-up before the math test.")
+                Text("First, a quiet minute to settle in.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 18) {
-                StepRow(number: 1, text: "Practice: a colour appears. Look at its name and pinch your fingers to choose it.")
-                StepRow(number: 2, text: "Relax: breathe slowly with the circle for 1 minute.")
-                StepRow(number: 3, text: "Math test: 3 minutes.")
-                StepRow(number: 4, text: "Relax again for 1 minute.")
+                StepRow(number: 1, text: "Relax among quiet, snowy mountains for 1 minute, breathing slowly.")
+                StepRow(number: 2, text: "Math test: 3 minutes. Look at an answer and pinch your fingers to choose it.")
+                StepRow(number: 3, text: "Relax again for 1 minute.")
             }
             .padding(28)
             .frame(maxWidth: 640)
@@ -63,152 +62,158 @@ private struct StepRow: View {
     }
 }
 
-// MARK: - Colour practice
-
-struct PracticeView: View {
-    @Environment(AppModel.self) private var appModel
-
-    private var game: MathProblemManager { appModel.mathManager }
-    private var trial: ColourTrial { game.practiceTrial }
-
-    var body: some View {
-        VStack(spacing: 28) {
-            HStack(spacing: 14) {
-                RecordingBadge()
-                Text("Practice \(game.practiceNumber) of \(MathProblemManager.practiceTrialCount)")
-                    .font(.title2.weight(.semibold))
-                    .monospacedDigit()
-                Spacer()
-            }
-            .padding(.trailing, 140) // leave room for the Stop control
-
-            Text("Which colour is this?")
-                .font(.largeTitle.weight(.semibold))
-
-            Circle()
-                .fill(trial.target.swiftUIColor)
-                .frame(width: 200, height: 200)
-                .shadow(color: trial.target.swiftUIColor.opacity(0.5), radius: 24)
-                .id(game.practiceNumber)
-                .transition(.scale.combined(with: .opacity))
-                .animation(.spring(duration: 0.4), value: game.practiceNumber)
-
-            feedback
-                .frame(height: 36)
-
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)],
-                      spacing: 18) {
-                ForEach(Array(trial.options.enumerated()), id: \.offset) { i, option in
-                    AnswerTile(label: option.name,
-                               state: tileState(for: i),
-                               locked: game.practiceLastCorrect != nil,
-                               action: { game.submitPractice(optionIndex: i) })
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    @ViewBuilder private var feedback: some View {
-        if let correct = game.practiceLastCorrect {
-            Label(correct ? "Correct!" : "It was \(trial.target.name)",
-                  systemImage: correct ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .font(.title2.bold())
-                .foregroundStyle(correct ? .green : .red)
-        } else {
-            Text("Look at an answer, then pinch to choose it")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func tileState(for index: Int) -> AnswerTile.State {
-        guard let correct = game.practiceLastCorrect else { return .idle }
-        if index == trial.correctIndex                     { return .correct }
-        if index == game.practiceLastIndex && !correct     { return .wrong }
-        return .dimmed
-    }
-}
-
-extension PracticeColour {
-    var swiftUIColor: Color {
-        switch self {
-        case .red:    return .red
-        case .blue:   return .blue
-        case .green:  return .green
-        case .yellow: return .yellow
-        case .orange: return .orange
-        case .purple: return .purple
-        }
-    }
-}
-
 // MARK: - Rest (1 minute, before and after the test)
 
+/// A calm, guided minute: a softly glowing orb to breathe with (in for 4 s, out for 6 s —
+/// a longer out-breath helps the body settle), and gentle prompts that change slowly.
+/// No big clock and no red badge, so nothing pulls attention or adds pressure.
 struct RestView: View {
     let isAfterTest: Bool
     let remaining: TimeInterval
 
-    /// One breath: 4 s in, 4 s out.
-    private static let halfBreath: Double = 4
+    private static let inhale: Double = 4
+    private static let exhale: Double = 6
+    private static let promptSeconds: Double = 12
+
+    private static let promptsBefore = [
+        "Look out at the quiet, snowy peaks.",
+        "Breathe in the cool, clean mountain air.",
+        "Let your shoulders soften and drop.",
+        "Watch the snow drift slowly down.",
+        "There is nothing you need to do right now.",
+    ]
+    private static let promptsAfter = [
+        "You did well. Let the test go.",
+        "Look out at the still, snowy mountains.",
+        "Breathe in the cool, clean mountain air.",
+        "Relax your hands and your face.",
+        "Watch the snow drift slowly down.",
+    ]
 
     @State private var breathingIn = false
+    @State private var promptIndex = 0
+
+    private var prompts: [String] { isAfterTest ? Self.promptsAfter : Self.promptsBefore }
+    private var progress: Double {
+        1 - max(0, min(1, remaining / MathProblemManager.restDuration))
+    }
 
     var body: some View {
-        VStack(spacing: 32) {
+        VStack(spacing: 28) {
             HStack {
-                RecordingBadge()
+                QuietLoggingDot()
                 Spacer()
             }
             .padding(.trailing, 140)
 
-            VStack(spacing: 10) {
-                Text(isAfterTest ? "Well done. Now relax." : "Relax")
-                    .font(.extraLargeTitle2)
-                Text("Sit comfortably and breathe slowly with the circle.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
+            Text(isAfterTest ? "Well done. Now, rest." : "Take a quiet moment in the mountains")
+                .font(.largeTitle.weight(.medium))
+                .foregroundStyle(.primary.opacity(0.9))
 
-            ZStack {
-                Circle()
-                    .fill(.teal.opacity(0.18))
-                    .frame(width: 320, height: 320)
-                Circle()
-                    .fill(.teal.opacity(0.55))
-                    .frame(width: 320, height: 320)
-                    .scaleEffect(breathingIn ? 1.0 : 0.45)
-                Text(breathingIn ? "Breathe in" : "Breathe out")
-                    .font(.title.weight(.semibold))
-                    .contentTransition(.opacity)
-            }
-            .frame(height: 340)
+            BreathingOrb(expanded: breathingIn)
+                .frame(width: 380, height: 380)
 
-            let secs = Int(remaining.rounded(.up))
-            Text(String(format: "%d:%02d", secs / 60, secs % 60))
-                .font(.title2.weight(.semibold).monospacedDigit())
+            Text(breathingIn ? "Breathe in…" : "…and slowly out")
+                .font(.title2.weight(.regular))
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("\(secs) seconds left")
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: 1.2), value: breathingIn)
 
-            Text(isAfterTest ? "Your results appear when the minute is over."
-                             : "The math test instructions appear when the minute is over.")
-                .font(.callout)
+            Text(prompts[promptIndex % prompts.count])
+                .font(.title3.italic())
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .id(promptIndex)
+                .transition(.opacity)
+                .frame(height: 30)
 
             Spacer(minLength: 0)
+
+            // A faint line that fills over the minute — no numbers to watch.
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.08))
+                    Capsule().fill(.white.opacity(0.28))
+                        .frame(width: geo.size.width * progress)
+                        .animation(.linear(duration: 0.25), value: progress)
+                }
+            }
+            .frame(width: 300, height: 4)
+            .accessibilityLabel("\(Int(remaining.rounded(.up))) seconds of rest left")
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 36, style: .continuous)
+                .fill(LinearGradient(colors: [Color(red: 0.20, green: 0.30, blue: 0.50).opacity(0.30),
+                                              Color(red: 0.35, green: 0.50, blue: 0.70).opacity(0.20)],
+                                     startPoint: .top, endPoint: .bottom))
+                .padding(-20)
         }
         .task { await breathe() }
+        .task { await cyclePrompts() }
     }
 
     private func breathe() async {
         while !Task.isCancelled {
-            withAnimation(.easeInOut(duration: Self.halfBreath)) { breathingIn = true }
-            try? await Task.sleep(for: .seconds(Self.halfBreath))
+            withAnimation(.easeInOut(duration: Self.inhale)) { breathingIn = true }
+            try? await Task.sleep(for: .seconds(Self.inhale))
             if Task.isCancelled { return }
-            withAnimation(.easeInOut(duration: Self.halfBreath)) { breathingIn = false }
-            try? await Task.sleep(for: .seconds(Self.halfBreath))
+            withAnimation(.easeInOut(duration: Self.exhale)) { breathingIn = false }
+            try? await Task.sleep(for: .seconds(Self.exhale))
         }
+    }
+
+    private func cyclePrompts() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(Self.promptSeconds))
+            if Task.isCancelled { return }
+            withAnimation(.easeInOut(duration: 1.5)) { promptIndex += 1 }
+        }
+    }
+}
+
+/// Soft, layered glow that swells on the in-breath and settles on the out-breath.
+private struct BreathingOrb: View {
+    let expanded: Bool
+
+    // Icy, snow-light colours to match the mountains.
+    private let lavender = Color(red: 0.70, green: 0.78, blue: 0.98)
+    private let seafoam  = Color(red: 0.62, green: 0.86, blue: 0.95)
+
+    var body: some View {
+        ZStack {
+            // Outer halo
+            Circle()
+                .fill(RadialGradient(colors: [seafoam.opacity(0.35), .clear],
+                                     center: .center, startRadius: 40, endRadius: 190))
+                .scaleEffect(expanded ? 1.0 : 0.7)
+                .blur(radius: 20)
+
+            // Main orb
+            Circle()
+                .fill(RadialGradient(colors: [.white.opacity(0.85), lavender.opacity(0.75), seafoam.opacity(0.55)],
+                                     center: .init(x: 0.42, y: 0.38), startRadius: 4, endRadius: 150))
+                .frame(width: 260, height: 260)
+                .scaleEffect(expanded ? 1.0 : 0.55)
+                .blur(radius: 2)
+                .shadow(color: lavender.opacity(0.5), radius: 40)
+
+            // Faint guide ring at full size
+            Circle()
+                .stroke(.white.opacity(0.12), lineWidth: 1.5)
+                .frame(width: 260, height: 260)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A small, still grey dot so researchers can see logging is on without a pulsing red badge.
+private struct QuietLoggingDot: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(.white.opacity(0.4)).frame(width: 7, height: 7)
+            Text("Logging").font(.caption).foregroundStyle(.tertiary)
+        }
+        .accessibilityLabel("Logging is on")
     }
 }
 
@@ -228,13 +233,13 @@ struct TestIntroView: View {
             VStack(spacing: 12) {
                 Text("Math Test")
                     .font(.extraLargeTitle)
-                Text("Warm-up done. You're ready.")
+                Text("Whenever you're ready.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 18) {
-                StepRow(number: 1, text: "Look at an answer and pinch to choose it, just like the practice.")
+                StepRow(number: 1, text: "Look at an answer and pinch your fingers to choose it.")
                 StepRow(number: 2, text: "You have \(Int(MathProblemManager.secondsPerQuestion)) seconds for each question.")
                 StepRow(number: 3, text: "The test lasts \(Int(MathProblemManager.testDuration / 60)) minutes, then you relax for 1 minute.")
             }

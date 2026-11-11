@@ -8,17 +8,36 @@
 import SwiftUI
 import RealityKit
 
-/// A calm, distraction-free "test room" shown around the participant while the
-/// test runs: a dark dome, a softly lit floor and a faint horizon ring. The test
-/// window floats in front of it, so the participant only sees the questions.
+/// Surroundings for the session. During the 1-minute rests the participant sits in a
+/// calm, snowy mountain range (see MountainScene). During the test it switches to a
+/// distraction-free "test room": a dark dome, a softly lit floor and a faint horizon
+/// ring, so the participant only sees the questions.
 struct ImmersiveView: View {
     @Environment(AppModel.self) private var appModel
 
+    private var isResting: Bool {
+        let phase = appModel.mathManager.phase
+        return phase == .relaxBefore || phase == .relaxAfter
+    }
+
     var body: some View {
         RealityView { content in
-            content.add(Self.makeTestRoom())
+            let room = Self.makeTestRoom()
+            room.name = Self.testRoomName
+            content.add(room)
+
+            let mountains = await MountainScene.make()
+            mountains.isEnabled = false
+            content.add(mountains)
+        } update: { content in
+            // Snowy mountains for the rest minutes; the plain, dark room for the test itself.
+            let resting = isResting
+            content.entities.first { $0.name == MountainScene.entityName }?.isEnabled = resting
+            content.entities.first { $0.name == Self.testRoomName }?.isEnabled = !resting
         }
     }
+
+    private static let testRoomName = "TestRoom"
 
     private static func makeTestRoom() -> Entity {
         let root = Entity()

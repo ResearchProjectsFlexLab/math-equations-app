@@ -60,34 +60,12 @@ struct MathProblem: Identifiable {
 // MARK: - Test Phase
 enum TestPhase: Equatable {
     case ready        // before Start Baseline is pressed
-    case practice     // baseline part 1: pick the colour you see, to learn look + pinch
-    case relaxBefore  // baseline part 2: 1 minute of calm breathing before the test
+    case relaxBefore  // baseline: 1 minute of calm, guided breathing before the test
     case testIntro    // test instructions, waiting for Start Test
     case countdown    // Start Test pressed, 3-2-1 before first question
     case running      // questions on screen
     case relaxAfter   // 1 minute of calm breathing after the test
     case finished     // logging closed, log saved
-}
-
-// MARK: - Colour practice
-/// The colours used in the baseline practice. The view maps each to a SwiftUI colour.
-enum PracticeColour: String, CaseIterable {
-    case red, blue, green, yellow, orange, purple
-
-    var name: String { rawValue.capitalized }
-}
-
-struct ColourTrial: Equatable {
-    let target:  PracticeColour
-    let options: [PracticeColour]
-
-    var correctIndex: Int { options.firstIndex(of: target)! }
-
-    static func generate(avoiding previous: PracticeColour? = nil) -> ColourTrial {
-        let target = PracticeColour.allCases.filter { $0 != previous }.randomElement()!
-        let others = PracticeColour.allCases.filter { $0 != target }.shuffled().prefix(3)
-        return ColourTrial(target: target, options: ([target] + others).shuffled())
-    }
 }
 
 // MARK: - Manager
@@ -101,18 +79,8 @@ final class MathProblemManager {
     /// The test ends on its own (and saves the log) after this long. Counted from the first question.
     static let testDuration: TimeInterval = 3 * 60
 
-    /// How many colour questions the baseline practice asks.
-    static let practiceTrialCount = 5
-
     /// Length of the calm rest before and after the test.
     static let restDuration: TimeInterval = 60
-
-    // Baseline practice state
-    var practiceTrial:        ColourTrial = .generate()
-    var practiceNumber:       Int         = 0
-    var practiceCorrectCount: Int         = 0
-    var practiceLastCorrect:  Bool?       = nil
-    var practiceLastIndex:    Int?        = nil
 
     /// Time left in the current 1-minute rest.
     var restTimeRemaining: TimeInterval = MathProblemManager.restDuration
@@ -159,51 +127,17 @@ final class MathProblemManager {
     private var countdownTask:     Task<Void, Never>?
     private var timerTask:         Task<Void, Never>?
     private var testClockTask:     Task<Void, Never>?
-    private var practiceTask:      Task<Void, Never>?
     private var restTask:          Task<Void, Never>?
 
     // MARK: - Baseline
 
-    /// Starts logging and the baseline: colour practice, then 1 minute of rest, then the test instructions.
+    /// Starts logging and the baseline: 1 minute of guided rest, then the test instructions.
     func startBaseline() {
         guard !isRunning else { return }
         cancelTasks()
         resetSession()
-        addLog("BASELINE START — colour practice (\(Self.practiceTrialCount) questions), then \(Int(Self.restDuration))s rest")
-        phase = .practice
-        practiceNumber = 0
-        practiceCorrectCount = 0
-        nextPracticeTrial()
-    }
-
-    func submitPractice(optionIndex: Int) {
-        guard phase == .practice, practiceLastCorrect == nil,
-              practiceTrial.options.indices.contains(optionIndex) else { return }
-        let picked = practiceTrial.options[optionIndex]
-        let correct = picked == practiceTrial.target
-        practiceLastCorrect = correct
-        practiceLastIndex = optionIndex
-        if correct { practiceCorrectCount += 1 }
-        addLog("PRACTICE ANSWER [\(practiceNumber)] — '\(picked.name)' \(correct ? "✓ correct" : "✗ wrong | correct: '\(practiceTrial.target.name)'")")
-
-        practiceTask = Task {
-            try? await Task.sleep(for: .seconds(1.2))
-            guard !Task.isCancelled else { return }
-            if practiceNumber >= Self.practiceTrialCount {
-                addLog("PRACTICE END — \(practiceCorrectCount)/\(Self.practiceTrialCount) correct")
-                startRest(after: false)
-            } else {
-                nextPracticeTrial()
-            }
-        }
-    }
-
-    private func nextPracticeTrial() {
-        practiceLastCorrect = nil
-        practiceLastIndex = nil
-        practiceTrial = .generate(avoiding: practiceNumber == 0 ? nil : practiceTrial.target)
-        practiceNumber += 1
-        addLog("PRACTICE QUESTION [\(practiceNumber)] — colour: \(practiceTrial.target.name) | Options: \(practiceTrial.options.map(\.name).joined(separator: ", "))")
+        addLog("BASELINE START — \(Int(Self.restDuration))s guided rest")
+        startRest(after: false)
     }
 
     // MARK: - Rest (before and after the test)
@@ -560,7 +494,6 @@ final class MathProblemManager {
         countdownTask?.cancel(); countdownTask = nil
         timerTask?.cancel();     timerTask = nil
         testClockTask?.cancel(); testClockTask = nil
-        practiceTask?.cancel();  practiceTask = nil
         restTask?.cancel();      restTask = nil
     }
 
