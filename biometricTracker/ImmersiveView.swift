@@ -8,7 +8,7 @@
 import SwiftUI
 import RealityKit
 
-/// The whole session after Start: the participant sits in a quiet alpine valley (AlpineScene)
+/// The whole session after Start: the participant sits by a moonlit lake (LakeScene, as in the Following app)
 /// for the instructions and both rests, and the scene crossfades to a plain, dark "test room"
 /// for the math test. Panels float in front of them; during the rests only faint text shows.
 /// Pressing the Digital Crown ends the session early; what was recorded is still saved.
@@ -87,12 +87,12 @@ final class SceneStage {
     var panel: Entity?
     var restHUD: Entity?
 
-    private let alpine = AlpineScene()
+    private let lake = LakeScene()
     private let testRoom = ImmersiveView.makeTestRoom()
     private var lastSync: Date?
 
     init() {
-        root.addChild(alpine.root)
+        root.addChild(lake.root)
         testRoom.components.set(OpacityComponent(opacity: 0))
         testRoom.isEnabled = false
         root.addChild(testRoom)
@@ -106,11 +106,8 @@ final class SceneStage {
         let phase = game.phase
         let testing = phase == .testIntro || phase == .countdown || phase == .running
         Self.fade(testRoom, toward: testing ? 1 : 0, dt: dt)
-        Self.fade(alpine.root, toward: testing ? 0 : 1, dt: dt)
-        if alpine.root.isEnabled {
-            let resting = phase == .relaxBefore || phase == .relaxAfter
-            alpine.update(breath: resting ? game.breath(at: now) : 0.35, now: now)
-        }
+        Self.fade(lake.root, toward: testing ? 0 : 1, dt: dt)
+        if lake.root.isEnabled { lake.update(game: game, now: now) }
         panel?.isEnabled = phase == .instructions || testing
         restHUD?.isEnabled = phase == .relaxBefore || phase == .relaxAfter
     }

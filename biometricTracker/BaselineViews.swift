@@ -2,7 +2,7 @@
 //  BaselineViews.swift
 //  biometricTracker
 //
-//  The start window, and the panels shown inside the mountain scene: the baseline
+//  The start window, and the panels shown inside the lake scene: the baseline
 //  instructions, the faint text during the rests, the test instructions and the test.
 //
 
@@ -17,7 +17,7 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "mountain.2.fill")
+            Image(systemName: "moon.stars.fill")
                 .font(.system(size: 60, weight: .semibold))
                 .foregroundStyle(.teal)
                 .symbolEffect(.pulse, isActive: isOpening)
@@ -28,7 +28,7 @@ struct WelcomeView: View {
                 Text("1 min rest  ·  \(Int(MathProblemManager.testDuration / 60)) min test  ·  1 min rest")
                     .font(.title3)
                     .foregroundStyle(.secondary)
-                Text("Relax in a quiet snowy valley, answer math questions, then relax again. The log saves itself.")
+                Text("Relax by a moonlit lake, answer math questions, then relax again. The log saves itself.")
                     .foregroundStyle(.secondary)
             }
             .multilineTextAlignment(.center)
@@ -104,7 +104,7 @@ struct SessionPanel: View {
 
 // MARK: - Baseline instructions
 
-/// Shown in the mountain scene before the baseline: what to do, and a button to begin.
+/// Shown in the lake scene before the baseline: what to do, and a button to begin.
 struct InstructionsCard: View {
     @Environment(AppModel.self) private var appModel
     var inWindow = false
@@ -116,8 +116,8 @@ struct InstructionsCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Sit comfortably with your back supported.", systemImage: "chair")
                 Label("Rest your hands on your lap and keep still.", systemImage: "hand.raised")
-                Label("Look at the tallest snowy peak straight ahead.", systemImage: "mountain.2")
-                Label("Breathe gently as the light behind the mountains glows and fades.", systemImage: "wind")
+                Label("Look at the moon's reflection on the water.", systemImage: "moon.stars")
+                Label("Breathe gently as the moonlight glows and fades.", systemImage: "wind")
             }
             .font(.title3)
             Text("This lasts 1 minute. The math test instructions follow.")

@@ -10,7 +10,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The small control window: a Start button, and the results at the end.
-/// The rest of the session happens in the immersive mountain scene.
+/// The rest of the session happens in the immersive lake scene.
 struct ContentView: View {
 
     @Environment(AppModel.self) private var appModel
@@ -48,7 +48,7 @@ struct ContentView: View {
         .onDisappear { appModel.controlWindowIsOpen = false }
     }
 
-    /// Opens the mountain scene. The scene begins the session when it appears.
+    /// Opens the lake scene. The scene begins the session when it appears.
     private func start() async {
         notice = nil
         appModel.isOpeningSpace = true

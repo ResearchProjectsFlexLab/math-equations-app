@@ -60,8 +60,8 @@ struct MathProblem: Identifiable {
 // MARK: - Test Phase
 enum TestPhase: Equatable {
     case ready        // welcome window, before Start is pressed
-    case instructions // in the mountain scene, waiting for Start baseline
-    case relaxBefore  // baseline: 1 minute of rest in the mountain scene before the test
+    case instructions // in the lake scene, waiting for Start baseline
+    case relaxBefore  // baseline: 1 minute of rest in the lake scene before the test
     case testIntro    // test instructions, waiting for Start Test
     case countdown    // Start Test pressed, 3-2-1 before first question
     case running      // questions on screen
@@ -154,7 +154,7 @@ final class MathProblemManager {
     func startBaseline() {
         if phase == .ready || phase == .finished { begin() }
         guard phase == .instructions else { return }
-        addLog("BASELINE START — \(Int(Self.restDuration))s rest | scene: alpine valley | breathing \(Int(60 / Self.breathCycle))/min (in \(Int(Self.inhaleSeconds))s, out \(Int(Self.exhaleSeconds))s)")
+        addLog("BASELINE START — \(Int(Self.restDuration))s rest | scene: moonlit lake | breathing \(Int(60 / Self.breathCycle))/min (in \(Int(Self.inhaleSeconds))s, out \(Int(Self.exhaleSeconds))s)")
         startRest(after: false)
     }
 
